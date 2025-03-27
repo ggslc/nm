@@ -5,43 +5,6 @@ import scipy
 #TODO: function for translating stencil into set of basis vectors
 
 
-def dodgy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
-
-    a = scipy.sparse.coo_array((values, (coordinates[:,0], coordinates[:,1])), shape=shape).tocsr()
-
-    if return_decomposition:
-        return a.indptr, a.indices, a.data
-    else:
-        return a
-
-def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
-    # This can be made significantly more general, but this is just to
-    # see whether the basics work and reduce demands on memory
-
-
-    def sparse_jacrev(fun_, primals):
-        y, jvp_fun = jax.vjp(fun_, *primals)
-        rows = []
-        for bv in basis_vectors:
-            row, _ = jvp_fun(bv)
-            rows.append(row)
-        rows = jnp.concatenate(rows)
-
-        # print(rows)
-        return rows
-
-    def densify_sparse_jac(jacrows_vec):
-        jac = jnp.zeros((n, n))
-
-        # for bv_is, bv_js, jacrow in zip(i_coord_sets, j_coord_sets, jacrows):
-            # jac = jac.at[bv_is, bv_js].set(jacrow)
-
-        jac = jac.at[j_coord_sets, i_coord_sets].set(jacrows_vec)
-
-        return jac
-
-    return sparse_jacrev, densify_sparse_jac
-
 
 def create_repeated_array(base_array, n):
     repetitions = int(jnp.ceil(n / len(base_array)))
@@ -51,7 +14,7 @@ def create_repeated_array(base_array, n):
     return repeated_array[:n], repetitions
 
 
-def basis_vectors_etc(n, case_=1):
+def basis_vectors_etc(case_=1):
     """
     create basis vectors with which to carry out vector-jacobian products and
     sets of coordinates mapping the corresponding vjps to the dense jacobian.
