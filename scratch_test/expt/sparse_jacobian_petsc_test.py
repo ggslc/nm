@@ -56,14 +56,15 @@ def make_vto(s):
 def solve_petsc_dense(A, b, ksp_type='gmres', preconditioner=None, precondition_only=False):
     #ksp_type could be 'cg', 'bicg', 'bcgs', ...
 
-    comm = MPI.COMM_WORLD
+    comm = PETSc.COMM_WORLD
     size = comm.Get_size()
 
     print(f"Number of processes available: {size}")
 
-
     A = PETSc.Mat().createDense(comm=comm, size=A.shape, array=A)
     b = PETSc.Vec().createWithArray(b, comm=comm)
+
+    A = PETSc.DECIDE
 
     x = b.duplicate()
 
@@ -72,7 +73,7 @@ def solve_petsc_dense(A, b, ksp_type='gmres', preconditioner=None, precondition_
     ksp.setType(ksp_type)
 
     ksp.setOperators(A)
-    ksp.setFromOptions()
+    #ksp.setFromOptions()
     
     
     if preconditioner == 'hypre':
@@ -86,7 +87,7 @@ def solve_petsc_dense(A, b, ksp_type='gmres', preconditioner=None, precondition_
         ksp.solve(b, x)
     
     # Print the solution
-    x.view()
+    #x.view()
 
     x_jnp = jnp.array(x.getArray())
 
@@ -95,12 +96,17 @@ def solve_petsc_dense(A, b, ksp_type='gmres', preconditioner=None, precondition_
 
 
 def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', preconditioner='hypre', precondition_only=False):
-    #initialise MPI
-    comm = MPI.COMM_WORLD
+    comm = PETSc.COMM_WORLD
+    size = comm.Get_size()
 
     iptr, j, values = dodgy_coo_to_csr(values, coordinates, jac_shape, return_decomposition=True)
 
-    A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), comm=comm)
+    
+
+    rows_local = int(jac_shape[0] / size)
+
+    A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), bsize=[rows_local, jac_shape], comm=comm)
+    #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), comm=comm)
     
     b = PETSc.Vec().createWithArray(b, comm=comm)
     
@@ -112,13 +118,16 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
     ksp.setType(ksp_type)
 
     ksp.setOperators(A)
-    ksp.setFromOptions()
+    #ksp.setFromOptions()
     
     
     if preconditioner == 'hypre':
         pc = ksp.getPC()
         pc.setType('hypre')
         pc.setHYPREType('boomeramg')
+    else:
+        pc = ksp.getPC()
+        pc.setType(preconditioner)
 
     if precondition_only:
         pc.apply(b, x)
@@ -126,14 +135,13 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
         ksp.solve(b, x)
     
     # Print the solution
-    x.view()
+    #x.view()
 
     x_jnp = jnp.array(x.getArray())
 
     return x_jnp
 
 
-    
 
 def sparse_linear_solve(values, coordinates, jac_shape, b, x0, mode="jax-native"):
 
@@ -288,7 +296,7 @@ def make_solver_sparse_jvp(u_trial, intermediates=False):
 
 
 lx = 1
-n = 100_000
+n = 100
 dx = lx/n
 x = jnp.linspace(0,lx,n)
 s = 1
@@ -305,8 +313,8 @@ u_trial = jnp.exp(x)-1
 
 
 
-#newton_solve_with_intermediates = make_solver(u_trial, intermediates=True)
-newton_solve_with_intermediates = make_solver_sparse_jvp(u_trial, intermediates=True)
+newton_solve_with_intermediates = make_solver(u_trial, intermediates=True)
+#newton_solve_with_intermediates = make_solver_sparse_jvp(u_trial, intermediates=True)
 
 u_end, us = newton_solve_with_intermediates(mu)
 
