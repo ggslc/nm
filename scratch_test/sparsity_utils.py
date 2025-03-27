@@ -164,45 +164,50 @@ def basis_vectors_etc(n, case_=1):
     return basis_vectors, i_coord_sets, j_coord_sets
 
 
-
-def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
-    # This can be made significantly more general, but this is just to
-    # see whether the basics work and reduce demands on memory
-
-
-    def sparse_jacrev(fun_, primals):
-        y, jvp_fun = jax.vjp(fun_, *primals)
-        rows = []
-        for bv in basis_vectors:
-            row, _ = jvp_fun(bv)
-            rows.append(row)
-        rows = jnp.concatenate(rows)
-
-        # print(rows)
-        return rows
-
-    def densify_sparse_jac(jacrows_vec):
-        jac = jnp.zeros((n, n))
-
-        # for bv_is, bv_js, jacrow in zip(i_coord_sets, j_coord_sets, jacrows):
-            # jac = jac.at[bv_is, bv_js].set(jacrow)
-
-        jac = jac.at[j_coord_sets, i_coord_sets].set(jacrows_vec)
-
-        return jac
-
-    return sparse_jacrev, densify_sparse_jac
-
-
-
-def dodgy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
-
-    a = scipy.sparse.coo_array((values, (coordinates[:,0], coordinates[:,1])), shape=shape).tocsr()
-
-    if return_decomposition:
-        return a.indptr, a.indices, a.data
-    else:
-        return a
-
-
+#def colour_domain_uniform_mesh(domain, stencil_width=3):
+#    #stencil_width of -1 is a special case of the 2D 5 point stencil which we can
+#    #cover with 2 colours.
+#
+#    dim_ = len(domain.shape)
+#    
+#    basis_vectors = []
+#    i_coord_sets = []
+#    j_coord_sets = []
+#
+#    if dim_==1:
+#        for n in range(stencil_width):
+#            arr_ = np.zeros_like(domain)
+#            arr_[n::stencil_width]=1
+#            basis_vectors.append(arr_)
+#
+#            js_ = np.arange(domain.shape[0])
+#            is_ = np.arange(0+n, domain.shape[0], stencil_width)
+##            is_ = np.repeat(np.arange(k, domain.shape[0], stencil_width), stencil_width)
+##
+##            if basis[0]==1:
+##                is_ = is_[1:]
+##            if basis[-1]==1:
+##                is_ = is_[:-1]
+##
+##            if basis[0]==0 and basis[1]==0:
+##                is_ = np.insert(is_, 0, is_[0])
+##            if basis[-1]==0 and basis[-2]==0:
+##                is_ = np.append(is_, is_[-1])
+##
+#            i_coord_sets.append(is_)
+#            j_coord_sets.append(js_)
+#            
+#            print(arr_)
+#            print(is_)
+#            print(js_)
+#
+#
+#        return
+#
+#    if stencil_width==-1:
+#
+#        return
+#
+#
+#    return
 
