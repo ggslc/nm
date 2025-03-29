@@ -1,13 +1,28 @@
+#1st party
+import sys
+
+#local apps
+sys.path.insert(1, '../')
+from sparsity_utils import basis_vectors_etc, make_sparse_jacrev_fct, dodgy_coo_to_csr
+
+#3rd party
+from petsc4py import PETSc
+from mpi4py import MPI
+
 import jax
 import jax.numpy as jnp
 from jax import jacfwd, jacrev
+import matplotlib.pyplot as plt
 import jax.scipy.linalg as lalg
 from jax.scipy.optimize import minimize
+from jax import custom_vjp
+from jax.experimental.sparse import BCOO
+
+import scipy
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
-
 
 
 
@@ -293,6 +308,120 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
 
                 vto_jac = vto_jac_fn(u, h)
                 advo_jac = advo_jac_fn(u, h, h_old)
+
+
+                full_jacobian = jnp.block(
+                                          [[vto_jac[0], vto_jac[1]],
+                                          [advo_jac[0], advo_jac[1]]]
+                                )
+
+
+                #print(np.array(vto_jac[0]))
+                #print("-------------------")
+                #print("-------------------")
+                #print("-------------------")
+                #print(np.array(advo_jac[0]))
+                #print("-------------------")
+                #print("-------------------")
+                #print("-------------------")
+                #print(np.array(full_jacobian))
+                #raise
+
+
+                # np.set_printoptions(linewidth=200)
+                # print(np.array_str(full_jacobian, precision=2, suppress_small=True))
+                # np.set_printoptions(linewidth=75)
+                # print(full_jacobian.shape)
+
+
+                rhs = jnp.concatenate((-vto(u, h), -advo(u, h, h_old)))
+
+                dvar = lalg.solve(full_jacobian, rhs)
+
+                u = u.at[:].set(u+dvar[:n])
+                h = h.at[:].set(h+dvar[n:])
+
+
+                # plt.plot(dvar[:n])
+                # plt.show()
+                # plt.plot(dvar[n:])
+                # plt.show()
+
+
+            hus.append([h, u])
+
+            plotboth(h, u, title="Timestep {}, iteration {}".format(j+1, i),\
+                    savepath="../misc/full_implicit_tests/{}_{}.png".format(j+1,i),\
+                    axis_limits = [[-15, 30],[0, 150]], show_plots=False)
+
+            # plotboth(h, u, title="Timestep {}, iteration {}".format(j+1, i),\
+            #          savepath=None,\
+            #          axis_limits = [[-15, 30],[0, 150]], show_plots=True)
+
+            h_old = h.copy()
+
+
+
+
+            # if intermediates:
+              # us.append(u)
+
+        # if intermediates:
+        #   return u, us
+        # else:
+        #   return u
+
+        return u, h, hus
+
+    return newton_solve
+
+
+
+
+def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediates=False):
+
+    def newton_solve(mu):
+        hus = []
+
+
+        vto = make_vto(mu)
+        #advo = make_advo_first_order_upwind(dt) #more stable under larger dt
+        advo = make_advo_linear_differencing(dt) #more stable under larger dx
+
+
+        u = u_trial.copy()
+        h = h_trial.copy()
+
+        h_old = h_trial.copy()
+
+       
+        #it seems like maybe jax vjp can't handle just single arguments, so
+        #we might have to aggregate teh stencils by operator (if ykwim..?)
+    
+        bvs_gu, i_cs_gu, j_cs_gu = basis_vectors_etc(n, 1)
+        bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n, 5)
+
+        keys = ["basis_vectors", "i_coord_sets", "j_coord_sets"]
+        jac_params = {'dgudu': dict(zip(keys, basis_vectors_etc(n, 1))),
+                      'dgudh': dict(zip(keys, basis_vectors_etc(n, 2))), 
+                      'dghdu': dict(zip(keys, basis_vectors_etc(n, 3))), 
+                      'dghdh': dict(zip(keys, basis_vectors_etc(n, 4)))
+                      }
+        for key in jac_params.keys():
+            #I think actually, this will just take derivatie wrt the first arguments of
+            #vto and advo
+            jac_params[key]["sparse_jacrev"] = make_sparse_jacrev_fct(**jac_params[key])[0]
+        
+
+
+        for j in range(num_timesteps):
+            print(j)
+            for i in range(num_iterations):
+
+                vto_jac = vto_jac_fn(u, h)
+                advo_jac = advo_jac_fn(u, h, h_old)
+
+                dvto_du = jac_params
 
 
                 full_jacobian = jnp.block(

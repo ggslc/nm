@@ -64,7 +64,7 @@ def solve_petsc_dense(A, b, ksp_type='gmres', preconditioner=None, precondition_
     A = PETSc.Mat().createDense(comm=comm, size=A.shape, array=A)
     b = PETSc.Vec().createWithArray(b, comm=comm)
 
-    A = PETSc.DECIDE
+    #A = PETSc.DECIDE
 
     x = b.duplicate()
 
@@ -214,33 +214,35 @@ def make_solver(u_trial, intermediates=False):
 
     return newton_solve
 
-def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
-    # This can be made significantly more general, but this is just to
-    # see whether the basics work and reduce demands on memory
 
-
-    def sparse_jacrev(fun_, primals):
-        y, jvp_fun = jax.vjp(fun_, *primals)
-        rows = []
-        for bv in basis_vectors:
-            row, _ = jvp_fun(bv)
-            rows.append(row)
-        rows = jnp.concatenate(rows)
-
-        # print(rows)
-        return rows
-
-    def densify_sparse_jac(jacrows_vec):
-        jac = jnp.zeros((n, n))
-
-        # for bv_is, bv_js, jacrow in zip(i_coord_sets, j_coord_sets, jacrows):
-            # jac = jac.at[bv_is, bv_js].set(jacrow)
-
-        jac = jac.at[j_coord_sets, i_coord_sets].set(jacrows_vec)
-
-        return jac
-
-    return sparse_jacrev, densify_sparse_jac
+#moved to sparsity utils
+#def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
+#    # This can be made significantly more general, but this is just to
+#    # see whether the basics work and reduce demands on memory
+#
+#
+#    def sparse_jacrev(fun_, primals):
+#        y, jvp_fun = jax.vjp(fun_, *primals)
+#        rows = []
+#        for bv in basis_vectors:
+#            row, _ = jvp_fun(bv)
+#            rows.append(row)
+#        rows = jnp.concatenate(rows)
+#
+#        # print(rows)
+#        return rows
+#
+#    def densify_sparse_jac(jacrows_vec):
+#        jac = jnp.zeros((n, n))
+#
+#        # for bv_is, bv_js, jacrow in zip(i_coord_sets, j_coord_sets, jacrows):
+#            # jac = jac.at[bv_is, bv_js].set(jacrow)
+#
+#        jac = jac.at[j_coord_sets, i_coord_sets].set(jacrows_vec)
+#
+#        return jac
+#
+#    return sparse_jacrev, densify_sparse_jac
 
 
 #solve:
@@ -313,8 +315,10 @@ u_trial = jnp.exp(x)-1
 
 
 
-newton_solve_with_intermediates = make_solver(u_trial, intermediates=True)
-#newton_solve_with_intermediates = make_solver_sparse_jvp(u_trial, intermediates=True)
+#newton_solve_with_intermediates = make_solver(u_trial, intermediates=True)
+newton_solve_with_intermediates = make_solver_sparse_jvp(u_trial, intermediates=True)
+
+n sparse_jacobian_petsc_test.py
 
 u_end, us = newton_solve_with_intermediates(mu)
 
