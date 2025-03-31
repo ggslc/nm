@@ -15,19 +15,66 @@ def dodgy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
     else:
         return a
 
+
+def make_sparse_jacrev_fct_multiprime(n, basis_vectors, i_coord_sets, j_coord_sets):
+    # This can be made significantly more general, but this is just to
+    # see whether the basics work and reduce demands on memory
+
+
+    def sparse_jacrev(fun_, primals):
+        #Remember: vector-matrix product with a basis vector picks out a row.
+        #matrix-vector product with basis vector picks out a column.
+        #The indices of the things you're differentiating wrt form the columns
+        #and the indices of the function form the rows.
+        y, vjp_fun = jax.vjp(fun_, *primals)
+
+        #I think this is true at least...
+        m_range = range(len(primals))
+        rows_agg = [[] for i in m_range]
+        
+        #need to get rid of this loop!!
+        #maybe vmap or something?
+        for bv in basis_vectors:
+            row_tuple = vjp_fun(bv)
+            for i in m_range:
+                rows_agg[i].append(row_tuple[i])
+        
+        rows_agg = [jnp.concatenate(rows_agg[i]) for i in m_range]
+
+        return rows_agg
+
+    def densify_sparse_jac(jacrows_vec):
+        m = len(basis_vectors[0]) #number of columns in matrix
+        jac = jnp.zeros((n, m))
+
+        # for bv_is, bv_js, jacrow in zip(i_coord_sets, j_coord_sets, jacrows):
+            # jac = jac.at[bv_is, bv_js].set(jacrow)
+
+        jac = jac.at[j_coord_sets, i_coord_sets].set(jacrows_vec)
+
+        return jac
+
+    return sparse_jacrev, densify_sparse_jac
+
 def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
     # This can be made significantly more general, but this is just to
     # see whether the basics work and reduce demands on memory
 
 
     def sparse_jacrev(fun_, primals):
-        y, jvp_fun = jax.vjp(fun_, *primals)
+        #Remember: vector-matrix product with a basis vector picks out a row.
+        #matrix-vector product with basis vector picks out a column.
+        #The indices of the things you're differentiating wrt form the columns
+        #and the indices of the function form the rows.
+        y, vjp_fun = jax.vjp(fun_, *primals)
         rows = []
+
         #need to get rid of this loop!!
         #maybe vmap or something?
         for bv in basis_vectors:
-            row, _ = jvp_fun(bv)
+            row, _ = vjp_fun(bv)
             rows.append(row)
+
         rows = jnp.concatenate(rows)
 
         # print(rows)

@@ -3,7 +3,10 @@ import sys
 
 #local apps
 sys.path.insert(1, '../')
-from sparsity_utils import basis_vectors_etc, make_sparse_jacrev_fct, dodgy_coo_to_csr
+from sparsity_utils import basis_vectors_etc,\
+                           make_sparse_jacrev_fct,\
+                           dodgy_coo_to_csr,\
+                           make_sparse_jacrev_fct_multiprime
 
 #3rd party
 from petsc4py import PETSc
@@ -379,7 +382,52 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
 
     return newton_solve
 
+#TODO: Refactor this jesus christ. it's also in sparse_jacobian_petsc_test.py... and it's rubbish anyway!
+def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', preconditioner='hypre', precondition_only=False):
+    comm = PETSc.COMM_WORLD
+    size = comm.Get_size()
 
+    iptr, j, values = dodgy_coo_to_csr(values, coordinates, jac_shape, return_decomposition=True)
+
+    
+
+    #rows_local = int(jac_shape[0] / size)
+
+    #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), bsize=[rows_local, jac_shape], comm=comm)
+    A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), comm=comm)
+    
+    b = PETSc.Vec().createWithArray(b, comm=comm)
+    
+    x = b.duplicate()
+    
+    
+    # Create a linear solver
+    ksp = PETSc.KSP().create()
+    ksp.setType(ksp_type)
+
+    ksp.setOperators(A)
+    #ksp.setFromOptions()
+    
+    
+    if preconditioner == 'hypre':
+        pc = ksp.getPC()
+        pc.setType('hypre')
+        pc.setHYPREType('boomeramg')
+    else:
+        pc = ksp.getPC()
+        pc.setType(preconditioner)
+
+    if precondition_only:
+        pc.apply(b, x)
+    else:
+        ksp.solve(b, x)
+    
+    # Print the solution
+    #x.view()
+
+    x_jnp = jnp.array(x.getArray())
+
+    return x_jnp
 
 
 def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediates=False):
@@ -403,51 +451,47 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
         #we might have to aggregate teh stencils by operator (if ykwim..?)
     
         bvs_gu, i_cs_gu, j_cs_gu = basis_vectors_etc(n, 1)
-        bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n, 5)
-        sparse_jacrev_gu,_ = make_sparse_jacrev_fct(bvs_gu, i_cs_gu, j_cs_gu)
-        sparse_jacrev_gh,_ = make_sparse_jacrev_fct(bvs_gh, i_cs_gh, j_cs_gh)
+        bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n+1, 5)
+        sparse_jacrev_gu,_ = make_sparse_jacrev_fct_multiprime(n, bvs_gu, i_cs_gu, j_cs_gu)
+        sparse_jacrev_gh,_ = make_sparse_jacrev_fct_multiprime(n+1, bvs_gh, i_cs_gh, j_cs_gh)
 
+        
+        is_dvt_du  = i_cs_gu.copy()
+        js_dvt_du  = j_cs_gu.copy()
+        is_dvt_dh  = i_cs_gu.copy() + n
+        js_dvt_dh  = j_cs_gu.copy()
+        is_dadv_du = i_cs_gh.copy() + n
+        js_dadv_du = j_cs_gh.copy()
+        is_dadv_dh = i_cs_gh.copy() + n
+        js_dadv_dh = j_cs_gh.copy() + n
 
         for j in range(num_timesteps):
             print(j)
             for i in range(num_iterations):
                 
                 #TODO: work out wtf is going on here and everywhere...
-                vto_jac_rows = sparse_jacrev_gu(vto, (u, h))
-                advo_jac_rows = sparse_jacrev_gh(advo, (u, h, h_old))
 
-                print(vto_jac_rows)
-                print(advo_jac_rows)
+                dvt_du_values, dvt_dh_values = sparse_jacrev_gu(vto, (u, h))
+                dadv_du_values, dadv_dh_values, dadv_dhold_rows = sparse_jacrev_gh(advo, (u, h, h_old))
+
+                #print(dvt_du_rows.shape)
+                #print(dvt_dh_rows.shape)
+                #print(dadv_du_rows.shape)
+                #print(dadv_dh_rows.shape)
+                #print(dadv_dhold_rows.shape)
+
+                all_values = jnp.concatenate((dvt_du_values, dvt_dh_values, dadv_du_values, dadv_dh_values))
+                all_is = jnp.concatenate((is_dvt_du, is_dvt_dh, is_dadv_du, is_dadv_dh))
+                all_js = jnp.concatenate((js_dvt_du, js_dvt_dh, js_dadv_du, js_dadv_dh))
+                all_coords = jnp.column_stack((all_is, all_js))
+
+                print(all_values.shape)
+                print(all_coords.shape)
                 raise
-
-
-                full_jacobian = jnp.block(
-                                          [[vto_jac[0], vto_jac[1]],
-                                          [advo_jac[0], advo_jac[1]]]
-                                )
-
-
-                #print(np.array(vto_jac[0]))
-                #print("-------------------")
-                #print("-------------------")
-                #print("-------------------")
-                #print(np.array(advo_jac[0]))
-                #print("-------------------")
-                #print("-------------------")
-                #print("-------------------")
-                #print(np.array(full_jacobian))
-                #raise
-
-
-                # np.set_printoptions(linewidth=200)
-                # print(np.array_str(full_jacobian, precision=2, suppress_small=True))
-                # np.set_printoptions(linewidth=75)
-                # print(full_jacobian.shape)
-
 
                 rhs = jnp.concatenate((-vto(u, h), -advo(u, h, h_old)))
 
-                dvar = lalg.solve(full_jacobian, rhs)
+                dvar = solve_petsc_sparse(all_values, all_coords, (2*n + 1, 2*n + 1), rhs)
 
                 u = u.at[:].set(u+dvar[:n])
                 h = h.at[:].set(h+dvar[n:])
@@ -595,10 +639,10 @@ u_trial = jnp.exp(x)-1
 h_trial = h.copy()
 
 
-newton_solve = make_solver(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
+#newton_solve = make_solver(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
 ##newton_solve = make_solver(u_trial, h_trial, 2e-3, 10, 20, intermediates=False)
 
-#newton_solve = make_solver_sparse_jvp(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
+newton_solve = make_solver_sparse_jvp(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
 
 
 

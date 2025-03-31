@@ -103,10 +103,10 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
 
     
 
-    rows_local = int(jac_shape[0] / size)
+    #rows_local = int(jac_shape[0] / size)
 
-    A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), bsize=[rows_local, jac_shape], comm=comm)
-    #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), comm=comm)
+    #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), bsize=[rows_local, jac_shape], comm=comm)
+    A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), comm=comm)
     
     b = PETSc.Vec().createWithArray(b, comm=comm)
     
@@ -317,8 +317,6 @@ u_trial = jnp.exp(x)-1
 
 #newton_solve_with_intermediates = make_solver(u_trial, intermediates=True)
 newton_solve_with_intermediates = make_solver_sparse_jvp(u_trial, intermediates=True)
-
-n sparse_jacobian_petsc_test.py
 
 u_end, us = newton_solve_with_intermediates(mu)
 
