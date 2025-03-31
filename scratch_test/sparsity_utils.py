@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy
@@ -252,10 +253,10 @@ def basis_vectors_etc(n, case_=1):
 
 
 
-basis_vectors, i_coord_sets, j_coord_sets = basis_vectors_etc(20, 5)
-print(basis_vectors)
-print(i_coord_sets)
-print(j_coord_sets)
+#basis_vectors, i_coord_sets, j_coord_sets = basis_vectors_etc(20, 5)
+#print(basis_vectors)
+#print(i_coord_sets)
+#print(j_coord_sets)
 
 
 #def colour_domain_uniform_mesh(domain, stencil_width=3):

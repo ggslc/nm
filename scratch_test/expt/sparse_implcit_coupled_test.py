@@ -86,7 +86,7 @@ def make_advo_linear_differencing(dt):
     # @jax.jit
     def advo(u, h, h_old):
 
-        h_faces = jnp.zeros((n+2,))
+        h_faces = jnp.zeros((n+2,)) #1 longer than h (which is n+1 long). h considered at cell centres for advo and u at cell centres for vto.
         h_faces = h_faces.at[2:n+1].set(h[1:n] + (h[1:n] - h[:n-1])/2) #does this do anything to the accuracy?
         ##h_faces = h_faces.at[2:n+1].set(h[1:n] + (h[2:n+1] - h[:n-1])/4) #this central difference form of the derivative is unstable
 
@@ -98,7 +98,7 @@ def make_advo_linear_differencing(dt):
         
 
         thk_flux   = jnp.zeros((n+2,))
-        thk_flux   = thk_flux.at[2:n+1].set(h_faces[2:n+1] * u[1:]) #first order upwinding
+        thk_flux   = thk_flux.at[2:n+1].set(h_faces[2:n+1] * u[1:])
         thk_flux   = thk_flux.at[0].set(-u[0] * h[0]) #gets in reflection bc for u and that dhdx=0 (so h0 = h1 = h-1)
         thk_flux   = thk_flux.at[1].set(u[0] * h[0])
 
@@ -123,7 +123,7 @@ def make_advo_linear_differencing(dt):
         # return advection_eq
 
 
-        # return dhdt + thk_flux[:n+1] - thk_flux[1:n+2] - accm_term
+        # return dhdt + thk_flux[:n+1] - thk_flux[1:n+2] - accm_term. Nope. Think about basic integration.
         return dhdt - thk_flux[:n+1] + thk_flux[1:n+2] - accm_term
 
     return advo
@@ -282,8 +282,8 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
 
         vto = make_vto(mu)
 
-        print(np.array(vto(u_trial, h_trial)))
-        print(np.array(vto(u_trial, h_trial)).shape)
+        #print(np.array(vto(u_trial, h_trial)))
+        #print(np.array(vto(u_trial, h_trial)).shape)
 
         #advo = make_advo_first_order_upwind(dt) #more stable under larger dt
         advo = make_advo_linear_differencing(dt) #more stable under larger dx
@@ -309,12 +309,16 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
                 vto_jac = vto_jac_fn(u, h)
                 advo_jac = advo_jac_fn(u, h, h_old)
 
+                #print(vto_jac[0].shape) #(n,n)
+                #print(vto_jac[1].shape) #(n,n+1)
+                #print(advo_jac[0].shape) #(n+1,n)
+                #print(advo_jac[1].shape) #(n+1,n+1)
 
                 full_jacobian = jnp.block(
                                           [[vto_jac[0], vto_jac[1]],
                                           [advo_jac[0], advo_jac[1]]]
                                 )
-
+                #print(full_jacobian.shape) #given the above, will have shape (n+n+1, n+n+1)
 
                 #print(np.array(vto_jac[0]))
                 #print("-------------------")
@@ -400,28 +404,21 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
     
         bvs_gu, i_cs_gu, j_cs_gu = basis_vectors_etc(n, 1)
         bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n, 5)
-
-        keys = ["basis_vectors", "i_coord_sets", "j_coord_sets"]
-        jac_params = {'dgudu': dict(zip(keys, basis_vectors_etc(n, 1))),
-                      'dgudh': dict(zip(keys, basis_vectors_etc(n, 2))), 
-                      'dghdu': dict(zip(keys, basis_vectors_etc(n, 3))), 
-                      'dghdh': dict(zip(keys, basis_vectors_etc(n, 4)))
-                      }
-        for key in jac_params.keys():
-            #I think actually, this will just take derivatie wrt the first arguments of
-            #vto and advo
-            jac_params[key]["sparse_jacrev"] = make_sparse_jacrev_fct(**jac_params[key])[0]
-        
+        sparse_jacrev_gu,_ = make_sparse_jacrev_fct(bvs_gu, i_cs_gu, j_cs_gu)
+        sparse_jacrev_gh,_ = make_sparse_jacrev_fct(bvs_gh, i_cs_gh, j_cs_gh)
 
 
         for j in range(num_timesteps):
             print(j)
             for i in range(num_iterations):
+                
+                #TODO: work out wtf is going on here and everywhere...
+                vto_jac_rows = sparse_jacrev_gu(vto, (u, h))
+                advo_jac_rows = sparse_jacrev_gh(advo, (u, h, h_old))
 
-                vto_jac = vto_jac_fn(u, h)
-                advo_jac = advo_jac_fn(u, h, h_old)
-
-                dvto_du = jac_params
+                print(vto_jac_rows)
+                print(advo_jac_rows)
+                raise
 
 
                 full_jacobian = jnp.block(
@@ -598,9 +595,10 @@ u_trial = jnp.exp(x)-1
 h_trial = h.copy()
 
 
-#newton_solve = make_solver(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
-newton_solve = make_solver(u_trial, h_trial, 2e-3, 10, 20, intermediates=False)
+newton_solve = make_solver(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
+##newton_solve = make_solver(u_trial, h_trial, 2e-3, 10, 20, intermediates=False)
 
+#newton_solve = make_solver_sparse_jvp(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
 
 
 
