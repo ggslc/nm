@@ -6,7 +6,9 @@ sys.path.insert(1, '../')
 from sparsity_utils import basis_vectors_etc,\
                            make_sparse_jacrev_fct,\
                            dodgy_coo_to_csr,\
-                           make_sparse_jacrev_fct_multiprime
+                           make_sparse_jacrev_fct_multiprime,\
+                           basis_vectors_etc_nonsquare,\
+                           make_sparse_jacrev_fct_multiprime_no_densify
 
 #3rd party
 from petsc4py import PETSc
@@ -390,10 +392,6 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
     iptr, j, values = dodgy_coo_to_csr(values, coordinates, jac_shape, return_decomposition=True)
 
     
-
-    #rows_local = int(jac_shape[0] / size)
-
-    #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), bsize=[rows_local, jac_shape], comm=comm)
     A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), comm=comm)
     
     b = PETSc.Vec().createWithArray(b, comm=comm)
@@ -450,10 +448,15 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
         #it seems like maybe jax vjp can't handle just single arguments, so
         #we might have to aggregate teh stencils by operator (if ykwim..?)
     
-        bvs_gu, i_cs_gu, j_cs_gu = basis_vectors_etc(n, 1)
-        bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n+1, 5)
-        sparse_jacrev_gu,_ = make_sparse_jacrev_fct_multiprime(n, bvs_gu, i_cs_gu, j_cs_gu)
-        sparse_jacrev_gh,_ = make_sparse_jacrev_fct_multiprime(n+1, bvs_gh, i_cs_gh, j_cs_gh)
+        bvs_vt, i_cs_dvt_du, j_cs_dvt_du = basis_vectors_etc(n, 1)
+        _, i_cs_dvt_dh, j_cs_dvt_dh = basis_vectors_etc_nonsquare(n, n+1, 1)
+
+        bvs_ad, i_cs_dadv_du, j_cs_dadv_du = basis_vectors_etc_nonsquare(n+1, n, 3)
+        _, i_cs_dadv_dh, j_cs_dadv_dh = basis_vectors_etc(n+1, 5)
+
+        #bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n+1, 5)
+        sparse_jacrev_vt,_  = make_sparse_jacrev_fct_multiprime_no_densify(bvs_vt)
+        sparse_jacrev_adv,_ = make_sparse_jacrev_fct_multiprime_no_densify(bvs_ad)
 
         
         is_dvt_du  = i_cs_gu.copy()
@@ -465,6 +468,16 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
         is_dadv_dh = i_cs_gh.copy() + n
         js_dadv_dh = j_cs_gh.copy() + n
 
+        print(is_dvt_du.shape)
+        print(js_dvt_du.shape)
+        print(is_dvt_dh.shape)
+        print(js_dvt_dh.shape)
+        print(is_dadv_du.shape)
+        print(js_dadv_du.shape)
+        print(is_dadv_dh.shape)
+        print(js_dadv_dh.shape)
+        raise
+
         for j in range(num_timesteps):
             print(j)
             for i in range(num_iterations):
@@ -472,13 +485,14 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
                 #TODO: work out wtf is going on here and everywhere...
 
                 dvt_du_values, dvt_dh_values = sparse_jacrev_gu(vto, (u, h))
-                dadv_du_values, dadv_dh_values, dadv_dhold_rows = sparse_jacrev_gh(advo, (u, h, h_old))
+                dadv_du_values, dadv_dh_values, dadv_dhold_values = sparse_jacrev_gh(advo, (u, h, h_old))
 
-                #print(dvt_du_rows.shape)
-                #print(dvt_dh_rows.shape)
-                #print(dadv_du_rows.shape)
-                #print(dadv_dh_rows.shape)
-                #print(dadv_dhold_rows.shape)
+                print(dvt_du_values.shape)
+                print(dvt_dh_values.shape)
+                print(dadv_du_values.shape)
+                print(dadv_dh_values.shape)
+                print(dadv_dhold_values.shape)
+                raise
 
                 all_values = jnp.concatenate((dvt_du_values, dvt_dh_values, dadv_du_values, dadv_dh_values))
                 all_is = jnp.concatenate((is_dvt_du, is_dvt_dh, is_dadv_du, is_dadv_dh))
