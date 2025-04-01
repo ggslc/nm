@@ -554,12 +554,9 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
 
                 #dvar = solve_petsc_sparse(all_values, all_coords, (2*n + 1, 2*n + 1), rhs)
                 dense_jac = scipy.sparse.coo_matrix((all_values, (all_coords[:,0], all_coords[:,1])), shape=(2*n + 1, 2*n + 1)).todense()
-                #print(dense_jac)
-                #raise
 
                 dvar = sparse_linear_solve(all_values, all_coords, (2*n + 1, 2*n + 1), rhs, jnp.zeros(2*n+1), mode="jax-native")[0]
                 print(dvar)
-                #raise
 
                 u = u.at[:].set(u+dvar[:n])
                 h = h.at[:].set(h+dvar[n:])
