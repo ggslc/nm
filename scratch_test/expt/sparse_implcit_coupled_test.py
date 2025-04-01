@@ -31,7 +31,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
+np.set_printoptions(precision=1, suppress=False, linewidth=np.inf, threshold=np.inf)
 #formatter = {'float_kind': lambda x: f'{x:.2g}'}
 #np.set_printoptions(formatter=formatter, linewidth=np.inf)
 
@@ -290,9 +290,6 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
 
         vto = make_vto(mu)
 
-        #print(np.array(vto(u_trial, h_trial)))
-        #print(np.array(vto(u_trial, h_trial)).shape)
-
         #advo = make_advo_first_order_upwind(dt) #more stable under larger dt
         advo = make_advo_linear_differencing(dt) #more stable under larger dx
 
@@ -467,7 +464,7 @@ def sparse_linear_solve(values, coordinates, jac_shape, b, x0, mode="jax-native"
     return x, residual
 
 
-def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediates=False):
+def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps):
 
     def newton_solve(mu):
         hus = []
@@ -485,7 +482,8 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
 
        
         #it seems like maybe jax vjp can't handle just single arguments, so
-        #we might have to aggregate teh stencils by operator (if ykwim..?)
+        #we might have to aggregate teh stencils (basis vectors) by operator
+        #(if ykwim..)
     
         bvs_vt, i_cs_dvt_du, j_cs_dvt_du = basis_vectors_etc(n, 1)
         _, i_cs_dvt_dh, j_cs_dvt_dh = basis_vectors_etc_nonsquare(n, n+1, 1)
@@ -497,7 +495,7 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
 
         #The way that the basis vectors are found means that the case_ has to be the
         #same for the two versions for the advection equation for things to work
-        #even though, of course, the stencil for adv/u is different to that of adv/h.
+        #even though, of course, the best stencil for adv/u is different to that of adv/h.
 
 
         #bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n+1, 5)
@@ -514,58 +512,38 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
         is_dadv_dh = i_cs_dadv_dh.copy() + n
         js_dadv_dh = j_cs_dadv_dh.copy() + n
 
-        #print(is_dvt_du.shape)
-        #print(js_dvt_du.shape)
-        #print(is_dvt_dh.shape)
-        #print(js_dvt_dh.shape)
-        #print(is_dadv_du.shape)
-        #print(js_dadv_du.shape)
-        #print(is_dadv_dh.shape)
-        #print(js_dadv_dh.shape)
-        #raise
-
         for j in range(num_timesteps):
             print(j)
             for i in range(num_iterations):
                 
-                #TODO: work out wtf is going on here and everywhere...
-
+                #apply function taking operator and primals and evaluating the vjps associated
+                #with the basis vectors worked out above, corresponding to different stencils
+                #and shapes of operator matrix.
                 dvt_du_values, dvt_dh_values = sparse_jacrev_vt(vto, (u, h))
                 dadv_du_values, dadv_dh_values, dadv_dhold_values = sparse_jacrev_adv(advo, (u, h, h_old))
 
-                #print(dvt_du_values.shape)
-                #print(dvt_dh_values.shape)
-                #print(dadv_du_values.shape)
-                #print(dadv_dh_values.shape)
-                #print(dadv_dhold_values.shape)
-                #raise
 
+                #assemble large matrix in coo form.
                 all_values = jnp.concatenate((dvt_du_values, dvt_dh_values, dadv_du_values, dadv_dh_values))
                 all_is = jnp.concatenate((is_dvt_du, is_dvt_dh, is_dadv_du, is_dadv_dh))
                 all_js = jnp.concatenate((js_dvt_du, js_dvt_dh, js_dadv_du, js_dadv_dh))
                 all_coords = jnp.column_stack((all_is, all_js))
 
-                #print(all_values.shape)
-                #print(all_coords.shape)
+                #righ-hand side of the linear system
+                rhs = jnp.concatenate((-vto(u, h), -advo(u, h, h_old)))
+
+                ##For debugging:
+                dense_jac = scipy.sparse.coo_matrix((all_values, (all_coords[:,0], all_coords[:,1])), shape=(2*n + 1, 2*n + 1)).todense()
+                #print(dense_jac)
                 #raise
 
-                rhs = jnp.concatenate((-vto(u, h), -advo(u, h, h_old)))
-                #print(rhs)
-
-                #dvar = solve_petsc_sparse(all_values, all_coords, (2*n + 1, 2*n + 1), rhs)
-                dense_jac = scipy.sparse.coo_matrix((all_values, (all_coords[:,0], all_coords[:,1])), shape=(2*n + 1, 2*n + 1)).todense()
-
-                dvar = sparse_linear_solve(all_values, all_coords, (2*n + 1, 2*n + 1), rhs, jnp.zeros(2*n+1), mode="jax-native")[0]
-                print(dvar)
+                dvar = solve_petsc_sparse(all_values, all_coords, (2*n + 1, 2*n + 1), rhs)
+                #dvar = sparse_linear_solve(all_values, all_coords, (2*n + 1, 2*n + 1), rhs, jnp.zeros(2*n+1), mode="jax-native")[0]
+                #print(dvar)
 
                 u = u.at[:].set(u+dvar[:n])
                 h = h.at[:].set(h+dvar[n:])
 
-
-                # plt.plot(dvar[:n])
-                # plt.show()
-                # plt.plot(dvar[n:])
-                # plt.show()
 
 
             hus.append([h, u])
@@ -573,10 +551,6 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
             plotboth(h, u, title="Timestep {}, iteration {}".format(j+1, i),\
                     savepath="../misc/full_implicit_tests/{}_{}.png".format(j+1,i),\
                     axis_limits = [[-15, 30],[0, 150]], show_plots=False)
-
-            # plotboth(h, u, title="Timestep {}, iteration {}".format(j+1, i),\
-            #          savepath=None,\
-            #          axis_limits = [[-15, 30],[0, 150]], show_plots=True)
 
             h_old = h.copy()
 
@@ -600,7 +574,7 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
 
 
 lx = 1
-n = 100
+n = 93
 dx = lx/n
 x = jnp.linspace(0,lx,n)
 
@@ -707,7 +681,7 @@ h_trial = h.copy()
 #newton_solve = make_solver(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
 ##newton_solve = make_solver(u_trial, h_trial, 2e-3, 10, 20, intermediates=False)
 
-newton_solve = make_solver_sparse_jvp(u_trial, h_trial, 2e-4, 10, 20, intermediates=False)
+newton_solve = make_solver_sparse_jvp(u_trial, h_trial, 2e-4, 10, 20)
 
 
 

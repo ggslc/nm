@@ -365,7 +365,7 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
 
 
 lx = 1
-n = 10
+n = 8
 dx = lx/n
 x = jnp.linspace(0,lx,n)
 
