@@ -1,5 +1,7 @@
 #1st party
 import sys
+import os
+os.environ['JAX_DEBUG_NANS'] = 'True'
 
 #local apps
 sys.path.insert(1, '../')
@@ -29,8 +31,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-
-
+np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
+#formatter = {'float_kind': lambda x: f'{x:.2g}'}
+#np.set_printoptions(formatter=formatter, linewidth=np.inf)
 
 
 # u lives on cell centres
@@ -49,7 +52,7 @@ def make_vto(mu):
 
         p_W = 1.027 * jnp.maximum(0, h-s)
         p_I = 0.917 * h
-        phi = 1 - (p_W / p_I)
+        phi = 1 - (p_W / (p_I+1e-10))
         C = 300 * phi
         C = jnp.where(s_gnd>s_flt, C, 0)
 
@@ -427,6 +430,42 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
 
     return x_jnp
 
+def sparse_linear_solve(values, coordinates, jac_shape, b, x0, mode="jax-native"):
+
+    match mode:
+        case "jax_bicgstab":
+            #https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.csr_array.html
+            A = BCOO((values, coordinates), shape=jac_shape)
+
+            #If you don't include this preconditioner then things really go to shit
+            diag_indices = jnp.where(coordinates[:, 0] == coordinates[:, 1])[0]
+            jacobi_values = values[diag_indices]
+            jacobi_indices = coordinates[diag_indices, :]
+            M = BCOO((1.0 / jacobi_values, jacobi_indices), shape=jac_shape)
+            preconditioner = lambda x: M @ x
+
+            x, info = jax.scipy.sparse.linalg.bicgstab(A, b, x0=x0, M=preconditioner,
+                                                      tol=1e-10, atol=1e-10,
+                                                      maxiter=10000)
+
+            # print(x)
+
+            # Verify convergence
+            residual = np.linalg.norm(b - A @ x)
+
+        case "jax-native":
+            iptr, j, values = dodgy_coo_to_csr(values, coordinates, jac_shape, return_decomposition=True)
+            x = jax.experimental.sparse.linalg.spsolve(values, j, iptr, b)
+            residual = None
+
+        case "scipy-umfpack":
+            csr_array = dodgy_coo_to_csr(values, coordinates, jac_shape)
+            x = scipy.sparse.linalg.spsolve(csr_array, np.array(b))
+
+            residual = np.linalg.norm(b - csr_array @ x)
+
+    return x, residual
+
 
 def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediates=False):
 
@@ -451,32 +490,39 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
         bvs_vt, i_cs_dvt_du, j_cs_dvt_du = basis_vectors_etc(n, 1)
         _, i_cs_dvt_dh, j_cs_dvt_dh = basis_vectors_etc_nonsquare(n, n+1, 1)
 
-        bvs_ad, i_cs_dadv_du, j_cs_dadv_du = basis_vectors_etc_nonsquare(n+1, n, 3)
-        _, i_cs_dadv_dh, j_cs_dadv_dh = basis_vectors_etc(n+1, 5)
+        #the stencil has to be the same size to some degree
+        ##bvs_ad, i_cs_dadv_du, j_cs_dadv_du = basis_vectors_etc_nonsquare(n+1, n, 3)
+        bvs_ad, i_cs_dadv_du, j_cs_dadv_du = basis_vectors_etc_nonsquare(n+1, n, 5)
+        _, i_cs_dadv_dh, j_cs_dadv_dh = basis_vectors_etc(n+1, 5) #i've checked the bvs are the same dw.
+
+        #The way that the basis vectors are found means that the case_ has to be the
+        #same for the two versions for the advection equation for things to work
+        #even though, of course, the stencil for adv/u is different to that of adv/h.
+
 
         #bvs_gh, i_cs_gh, j_cs_gh = basis_vectors_etc(n+1, 5)
-        sparse_jacrev_vt,_  = make_sparse_jacrev_fct_multiprime_no_densify(bvs_vt)
-        sparse_jacrev_adv,_ = make_sparse_jacrev_fct_multiprime_no_densify(bvs_ad)
+        sparse_jacrev_vt  = make_sparse_jacrev_fct_multiprime_no_densify(bvs_vt)
+        sparse_jacrev_adv = make_sparse_jacrev_fct_multiprime_no_densify(bvs_ad)
 
         
-        is_dvt_du  = i_cs_gu.copy()
-        js_dvt_du  = j_cs_gu.copy()
-        is_dvt_dh  = i_cs_gu.copy() + n
-        js_dvt_dh  = j_cs_gu.copy()
-        is_dadv_du = i_cs_gh.copy() + n
-        js_dadv_du = j_cs_gh.copy()
-        is_dadv_dh = i_cs_gh.copy() + n
-        js_dadv_dh = j_cs_gh.copy() + n
+        is_dvt_du  = i_cs_dvt_du.copy()
+        js_dvt_du  = j_cs_dvt_du.copy()
+        is_dvt_dh  = i_cs_dvt_dh.copy()
+        js_dvt_dh  = j_cs_dvt_dh.copy()  + n
+        is_dadv_du = i_cs_dadv_du.copy() + n
+        js_dadv_du = j_cs_dadv_du.copy()
+        is_dadv_dh = i_cs_dadv_dh.copy() + n
+        js_dadv_dh = j_cs_dadv_dh.copy() + n
 
-        print(is_dvt_du.shape)
-        print(js_dvt_du.shape)
-        print(is_dvt_dh.shape)
-        print(js_dvt_dh.shape)
-        print(is_dadv_du.shape)
-        print(js_dadv_du.shape)
-        print(is_dadv_dh.shape)
-        print(js_dadv_dh.shape)
-        raise
+        #print(is_dvt_du.shape)
+        #print(js_dvt_du.shape)
+        #print(is_dvt_dh.shape)
+        #print(js_dvt_dh.shape)
+        #print(is_dadv_du.shape)
+        #print(js_dadv_du.shape)
+        #print(is_dadv_dh.shape)
+        #print(js_dadv_dh.shape)
+        #raise
 
         for j in range(num_timesteps):
             print(j)
@@ -484,28 +530,36 @@ def make_solver_sparse_jvp(u_trial, h_trial, dt, num_iterations, num_timesteps, 
                 
                 #TODO: work out wtf is going on here and everywhere...
 
-                dvt_du_values, dvt_dh_values = sparse_jacrev_gu(vto, (u, h))
-                dadv_du_values, dadv_dh_values, dadv_dhold_values = sparse_jacrev_gh(advo, (u, h, h_old))
+                dvt_du_values, dvt_dh_values = sparse_jacrev_vt(vto, (u, h))
+                dadv_du_values, dadv_dh_values, dadv_dhold_values = sparse_jacrev_adv(advo, (u, h, h_old))
 
-                print(dvt_du_values.shape)
-                print(dvt_dh_values.shape)
-                print(dadv_du_values.shape)
-                print(dadv_dh_values.shape)
-                print(dadv_dhold_values.shape)
-                raise
+                #print(dvt_du_values.shape)
+                #print(dvt_dh_values.shape)
+                #print(dadv_du_values.shape)
+                #print(dadv_dh_values.shape)
+                #print(dadv_dhold_values.shape)
+                #raise
 
                 all_values = jnp.concatenate((dvt_du_values, dvt_dh_values, dadv_du_values, dadv_dh_values))
                 all_is = jnp.concatenate((is_dvt_du, is_dvt_dh, is_dadv_du, is_dadv_dh))
                 all_js = jnp.concatenate((js_dvt_du, js_dvt_dh, js_dadv_du, js_dadv_dh))
                 all_coords = jnp.column_stack((all_is, all_js))
 
-                print(all_values.shape)
-                print(all_coords.shape)
-                raise
+                #print(all_values.shape)
+                #print(all_coords.shape)
+                #raise
 
                 rhs = jnp.concatenate((-vto(u, h), -advo(u, h, h_old)))
+                #print(rhs)
 
-                dvar = solve_petsc_sparse(all_values, all_coords, (2*n + 1, 2*n + 1), rhs)
+                #dvar = solve_petsc_sparse(all_values, all_coords, (2*n + 1, 2*n + 1), rhs)
+                dense_jac = scipy.sparse.coo_matrix((all_values, (all_coords[:,0], all_coords[:,1])), shape=(2*n + 1, 2*n + 1)).todense()
+                #print(dense_jac)
+                #raise
+
+                dvar = sparse_linear_solve(all_values, all_coords, (2*n + 1, 2*n + 1), rhs, jnp.zeros(2*n+1), mode="jax-native")[0]
+                print(dvar)
+                #raise
 
                 u = u.at[:].set(u+dvar[:n])
                 h = h.at[:].set(h+dvar[n:])
@@ -600,7 +654,7 @@ h = h.at[-1].set(0)
 # #linear sliding, ramped C:
 p_W = 1.027 * jnp.maximum(0, h-s)
 p_I = 0.917 * h
-phi = 1 - (p_W / p_I)
+phi = 1 - (p_W / (p_I+1e-10))
 C = 300 * phi
 C = jnp.where(s_gnd>s_flt, C, 0)
 # C = C.at[0].set(100)

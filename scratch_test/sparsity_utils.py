@@ -32,7 +32,7 @@ def make_sparse_jacrev_fct_multiprime_no_densify(basis_vectors):
         rows_agg = [[] for i in m_range]
         
         #need to get rid of this loop!!
-        #maybe vmap or something?
+        #maybe vmap or something? Maybe it's not so bad if n(bvs)~10...
         for bv in basis_vectors:
             row_tuple = vjp_fun(bv)
             for i in m_range:
@@ -129,7 +129,7 @@ def create_repeated_array(base_array, n):
     return repeated_array[:n], repetitions
 
 
-def basis_vectors_etc_nonsquare(nr, nc, fill_from_left=True, fill_from_top=True, case_=1):
+def basis_vectors_etc_nonsquare(nr, nc, case_=1, fill_from_left=True, fill_from_top=True):
     """
     create basis vectors with which to carry out jacobian-vector products and
     sets of coordinates mapping the corresponding jvps to the dense jacobian.
@@ -198,7 +198,7 @@ def basis_vectors_etc_nonsquare(nr, nc, fill_from_left=True, fill_from_top=True,
                 i_coord_sets = jnp.concatenate(i_coord_sets)
                 j_coord_sets = jnp.concatenate(j_coord_sets)
 
-            elif nc<nr:
+            elif nc==(nr-1):
                 
                 base_1 = np.array([1, 0, 0])
                 base_2 = np.array([0, 1, 0])
@@ -216,20 +216,20 @@ def basis_vectors_etc_nonsquare(nr, nc, fill_from_left=True, fill_from_top=True,
                     
                     is_ = np.repeat(np.arange(k, nr, 3), 3)
                    
-                    #TODO: GAVE UP HERE SO SORT OUT THE REST OF THIS CASE
+                    #TODO: Add functionality for things being quite different sizes.
+                    #so far only works if nr-nc=1
 
                     if basis[0]==1:
                         is_ = is_[1:]
-
                     if basis[-1]==1:
-                        is_ = np.concatenate([is_, np.repeat(is_[-1], nc-nr-1)])
+                        is_ = is_[:-2]
                     if basis[-2]==1:
-                        is_ = np.concatenate([is_, np.repeat(is_[-1], nc-nr)])
-                    if basis[-3]==1:
-                        is_ = np.concatenate([is_, np.repeat(is_[-1], nc-nr+1)])
+                        is_ = is_[:-1]
 
+                    #remember, you need those zeros to make the things the same length!
                     if basis[0]==0 and basis[1]==0:
                         is_ = np.insert(is_, 0, is_[0])
+                    
 
                     i_coord_sets.append(jnp.array(is_))
                     j_coord_sets.append(jnp.array(js_))
@@ -253,7 +253,55 @@ def basis_vectors_etc_nonsquare(nr, nc, fill_from_left=True, fill_from_top=True,
             raise NotImplementedError
         
         case 5:
-            raise NotImplementedError
+            if nc==(nr-1):
+                
+                base_1 = np.array([1, 0, 0, 0, 0])
+                base_2 = np.array([0, 1, 0, 0, 0])
+                base_3 = np.array([0, 0, 1, 0, 0])
+                base_4 = np.array([0, 0, 0, 1, 0])
+                base_5 = np.array([0, 0, 0, 0, 1])
+
+                basis_vectors = []
+                i_coord_sets = []
+                j_coord_sets = []
+                k = 0
+                for base in [base_1, base_2, base_3, base_4, base_5]:
+                    basis, r = create_repeated_array(base, nr)
+                    basis_vectors.append(jnp.array(basis).astype(jnp.float32))
+
+                    js_ = np.arange(nc)
+                    is_ =  np.repeat(np.arange(k, nr, 5), 5)
+                    
+                    if basis[0]==1:
+                        is_ = is_[2:]
+                    elif basis[1]==1:
+                        is_ = is_[1:]
+
+                    if basis[-1]==1:
+                        is_ = is_[:-3]
+                    elif basis[-2]==1:
+                        is_ = is_[:-2]
+                    elif basis[-3]==1:
+                        is_ = is_[:-1]
+
+                    #remember, you need those zeros to make the things the same length!
+                    if basis[0]==0 and basis[1]==0 and basis[2]==0:
+                        is_ = np.insert(is_, 0, is_[0])
+                        if basis[3]==0:
+                            is_ = np.insert(is_, 0, is_[0])
+                    if basis[-1]==0 and basis[-2]==0 and basis[-3]==0 and basis[-4]==0:
+                        is_ = np.append(is_, is_[-1])
+
+                    i_coord_sets.append(jnp.array(is_))
+                    j_coord_sets.append(jnp.array(js_))
+
+                    k += 1
+
+                i_coord_sets = jnp.concatenate(i_coord_sets)
+                j_coord_sets = jnp.concatenate(j_coord_sets)
+
+            else:
+                raise NotImplementedError
 
     for i in range(len(basis_vectors)):
         assert i_coord_sets[i].shape == j_coord_sets[i].shape, \

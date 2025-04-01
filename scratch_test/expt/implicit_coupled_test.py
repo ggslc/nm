@@ -9,8 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 
-
-
+np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
 
 
 # u lives on cell centres
@@ -299,7 +298,8 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
                                           [[vto_jac[0], vto_jac[1]],
                                           [advo_jac[0], advo_jac[1]]]
                                 )
-
+                print(full_jacobian)
+                raise
 
                 #print(np.array(vto_jac[0]))
                 #print("-------------------")
@@ -365,7 +365,7 @@ def make_solver(u_trial, h_trial, dt, num_iterations, num_timesteps, intermediat
 
 
 lx = 1
-n = 100
+n = 10
 dx = lx/n
 x = jnp.linspace(0,lx,n)
 
