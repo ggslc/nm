@@ -14,7 +14,29 @@ np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
 
 
 def make_fou_step(u, dt, dx, n):
-    pass
+
+    def fou_step(h):
+
+        h_change = jnp.zeros((n,))
+        h_change = h_change.at[1:].set((dt/dx)*u*(h[:n-1]-h[1:]))
+
+        h_new = h + h_change
+
+        return h_new
+    return fou_step
+        
+
+def make_naive_step(u, dt, dx, n):
+
+    def naive_step(h):
+
+        h_change = jnp.zeros((n,))
+        h_change = h_change.at[1:n-1].set( (dt/dx)*u*0.5*(h[:n-1]-h[2:]) )
+
+        h_new = h + h_change
+
+        return h_new
+    return fou_step
 
 
 def make_ppm_step(u, dt, dx, n, steepening=False,\
@@ -95,7 +117,7 @@ def make_ppm_step(u, dt, dx, n, steepening=False,\
             h_ls_alt = h_ls_alt.at[1:].set(h[:n-1] + 0.5*min_mag_grads[:n-1]*dx)
 
             h_rs_alt = jnp.zeros((n,))
-            h_rs_alt = h_rs_alt.at[:n-1].set(h[:n-1] - 0.5*min_mag_grads[:n-1]*dx)
+            h_rs_alt = h_rs_alt.at[:n-1].set(h[1:n] - 0.5*min_mag_grads[1:n]*dx)
 
         #    print(h_ls_alt)
         #    print(h_rs_alt)
@@ -119,7 +141,7 @@ def make_ppm_step(u, dt, dx, n, steepening=False,\
             del_squared_h = del_squared_h.at[1:n-1].set((1/6)/(dx**2)*( h[2:] -2*h[1:n-1] + h[:n-2]))
     
             eta_tilde = jnp.zeros((n,))
-            eta_tilde = eta_tilde.at[1:n-1].set( ((dx**2)/(h[2:] - h[:n-2])) * (del_squared_h[2:] - del_squared_h[:n-2]) )
+            eta_tilde = eta_tilde.at[1:n-1].set( -((dx**2)/(h[2:] - h[:n-2])) * (del_squared_h[2:] - del_squared_h[:n-2]) )
     
             eta_tilde = eta_tilde.at[1:n-1].set(
                     jnp.where(
@@ -131,10 +153,11 @@ def make_ppm_step(u, dt, dx, n, steepening=False,\
     
     
             eta = jnp.maximum(0, jnp.minimum(eta_1*(eta_tilde-eta_2), 1))
-            print(del_squared_h)
-            print(jnp.abs(h[2:]-h[:n-2]) - epsilon*jnp.minimum(jnp.abs(h[2:]), jnp.abs(h[:n-2])))
-            print(eta_tilde)
-            print(eta)
+#            print(del_squared_h)
+#            print(jnp.abs(h[2:]-h[:n-2]) - epsilon*jnp.minimum(jnp.abs(h[2:]), jnp.abs(h[:n-2])))
+#            print(eta_tilde)
+#            print(eta)
+#            raise
     
     
             h_ls = h_ls*(1-eta) + h_ls_alt*eta
@@ -202,24 +225,60 @@ def make_ppm_step(u, dt, dx, n, steepening=False,\
 
 
 
-def plot_h(h, i):
-    plt.plot(h)
+
+def make_gif(filepaths, id_):
+    import imageio
+    with imageio.get_writer('../misc/advec_tests/ppm_test_{}.gif'.format(id_), mode='I', duration=0.5) as writer:
+        for filename in filepaths:
+            image = imageio.imread(filename)
+            writer.append_data(image)
+
+
+
+def plot_h(h, h_analytic, id_):
+    plt.figure(figsize=(8,5))
+    plt.plot(h_analytic, color='k', linestyle='dashed')
+    plt.plot(h, color='b')
     plt.ylim(-0.5,1.5)
-    plt.savefig("../misc/advec_tests/ppm_test_1_{}.png".format(i))
+    plt.savefig("../misc/advec_tests/ppm_test_1_{}.png".format(id_))
     plt.close()
 
 
-x = jnp.linspace(0,1,20)
-dt = 2e-1
-u = 0.02
 
-h_init = 0.5*(1+ jnp.tanh(100*(x-0.25)))
-#h_init = jnp.where(x<0.25, 0, 1)
-
-
-ppm_step = make_ppm_step(u, dt, x[1]-x[0], h_init.shape[0], steepening=True)
-
-h_i = h_init.copy()
-for i in range(100):
-    plot_h(h_i, i)
-    h_i = ppm_step(h_i) 
+if __name__ == "__main__":
+    x = jnp.linspace(0,1,50)
+    dt = 2e-1
+    u = 0.02
+    
+    h_init = 0.5*(1+ jnp.tanh(100*(x-0.25)))
+    #h_init = jnp.where(x<0.25, 0, 1)
+    
+    
+    ppm_step = make_ppm_step(u, dt, x[1]-x[0], h_init.shape[0], steepening=False)
+    fou_step = make_fou_step(u, dt, x[1]-x[0], h_init.shape[0])
+    naive_step = make_naive_step(u, dt, x[1]-x[0], h_init.shape[0])
+    
+    h_i = h_init.copy()
+    
+    #for i in range(150):
+    #    h_analytic = 0.5*(1+ jnp.tanh(100*(x-0.25-u*i*dt)))
+    #    if not i%5:
+    #    #    plot_h(h_i, h_analytic, "NOsteep_{}".format(i))
+    #        plot_h(h_i, h_analytic, "naive_{}".format(i))
+    #    # h_i = ppm_step(h_i) 
+    #    #h_i = fou_step(h_i) 
+    #    h_i = naive_step(h_i) 
+    
+    from pathlib import Path
+    
+    #fps = [str(p) for p in Path("../misc/advec_tests/").glob("*FOU*.png")]
+    #fps = [str(p) for p in Path("../misc/advec_tests/").glob("*NOsteep*.png")]
+    fps = [str(p) for p in Path("../misc/advec_tests/").glob("*_steep*.png")]
+    #fps = [str(p) for p in Path("../misc/advec_tests/").glob("*naive*.png")]
+    
+    its = [int(fp.split("_")[-1].split(".")[0]) for fp in fps]
+    fps_sorted = [p for _, p in sorted(zip(its, fps))]
+    
+    make_gif(fps_sorted, "steep")
+    
+    
