@@ -75,9 +75,12 @@ if &shortmess =~ 'A'
 else
   set shortmess=aoO
 endif
-badd +1 simple_damage.py
-badd +432 ../../diva/iterative_implicit_ssa.py
-badd +0 ../implicit_coupled_test.py
+badd +57 simple_damage.py
+badd +1 ../../diva/iterative_implicit_ssa.py
+badd +1 ../implicit_coupled_test.py
+badd +29 ../../1d_ice_shelf.py
+badd +1 ../../misc/ice_shelf_ip_misc.png
+badd +45 simple_damage_staggered.py
 argglobal
 %argdel
 $argadd simple_damage.py
@@ -103,12 +106,13 @@ set winminheight=0
 set winheight=1
 set winminwidth=0
 set winwidth=1
-exe 'vert 1resize ' . ((&columns * 89 + 89) / 178)
-exe '2resize ' . ((&lines * 24 + 25) / 50)
-exe 'vert 2resize ' . ((&columns * 88 + 89) / 178)
-exe '3resize ' . ((&lines * 23 + 25) / 50)
-exe 'vert 3resize ' . ((&columns * 88 + 89) / 178)
+exe 'vert 1resize ' . ((&columns * 118 + 89) / 178)
+exe '2resize ' . ((&lines * 9 + 25) / 50)
+exe 'vert 2resize ' . ((&columns * 59 + 89) / 178)
+exe '3resize ' . ((&lines * 38 + 25) / 50)
+exe 'vert 3resize ' . ((&columns * 59 + 89) / 178)
 argglobal
+balt simple_damage_staggered.py
 setlocal autoindent
 setlocal backupcopy=
 setlocal nobinary
@@ -234,33 +238,33 @@ setlocal wrap
 setlocal wrapmargin=0
 silent! normal! zE
 let &fdl = &fdl
-let s:l = 205 - ((4 * winheight(0) + 24) / 48)
+let s:l = 582 - ((37 * winheight(0) + 24) / 48)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 205
-normal! 05|
+keepjumps 582
+normal! 0
 wincmd w
 argglobal
-2argu
-if bufexists(fnamemodify("../implicit_coupled_test.py", ":p")) | buffer ../implicit_coupled_test.py | else | edit ../implicit_coupled_test.py | endif
+terminal ++curwin ++cols=59 ++rows=9 
+let s:term_buf_9 = bufnr()
 balt ../../diva/iterative_implicit_ssa.py
-setlocal autoindent
+setlocal noautoindent
 setlocal backupcopy=
 setlocal nobinary
 setlocal nobreakindent
 setlocal breakindentopt=
 setlocal bufhidden=
 setlocal buflisted
-setlocal buftype=
+setlocal buftype=terminal
 setlocal nocindent
-setlocal cinkeys=0{,0},0),0],:,!^F,o,O,e
+setlocal cinkeys=0{,0},0),0],:,0#,!^F,o,O,e
 setlocal cinoptions=
 setlocal cinscopedecls=public,protected,private
 setlocal cinwords=if,else,while,do,for,switch
 setlocal colorcolumn=
-setlocal comments=b:#,fb:-
-setlocal commentstring=#\ %s
+setlocal comments=s1:/*,mb:*,ex:*/,://,b:#,:%,:XCOMM,n:>,fb:-
+setlocal commentstring=/*%s*/
 setlocal complete=.,w,b,u,t,i
 setlocal concealcursor=inc
 setlocal conceallevel=2
@@ -271,14 +275,14 @@ setlocal nocursorbind
 setlocal nocursorcolumn
 setlocal nocursorline
 setlocal cursorlineopt=both
-setlocal define=^\\s*\\(def\\|class\\)
+setlocal define=
 setlocal dictionary=
 setlocal nodiff
 setlocal equalprg=
 setlocal errorformat=
 setlocal expandtab
-if &filetype != 'python'
-setlocal filetype=python
+if &filetype != ''
+setlocal filetype=
 endif
 setlocal fillchars=
 setlocal fixendofline
@@ -299,13 +303,13 @@ setlocal formatprg=
 setlocal grepprg=
 setlocal iminsert=0
 setlocal imsearch=-1
-setlocal include=^\\s*\\(from\\|import\\)
-setlocal includeexpr=substitute(substitute(substitute(v:fname,b:grandparent_match,b:grandparent_sub,''),b:parent_match,b:parent_sub,''),b:child_match,b:child_sub,'g')
-setlocal indentexpr=python#GetIndent(v:lnum)
-setlocal indentkeys=0{,0},0),0],:,!^F,o,O,e,<:>,=elif,=except
+setlocal include=
+setlocal includeexpr=
+setlocal indentexpr=
+setlocal indentkeys=0{,0},0),0],:,0#,!^F,o,O,e
 setlocal noinfercase
 setlocal iskeyword=@,48-57,_,192-255
-setlocal keywordprg=python3\ -m\ pydoc
+setlocal keywordprg=
 setlocal nolinebreak
 setlocal nolisp
 setlocal lispoptions=
@@ -316,7 +320,7 @@ setlocal makeencoding=
 setlocal makeprg=
 setlocal matchpairs=(:),{:},[:]
 setlocal modeline
-setlocal modifiable
+setlocal nomodifiable
 setlocal nrformats=bin,octal,hex
 set number
 setlocal number
@@ -344,11 +348,11 @@ setlocal spellfile=
 setlocal spelllang=en
 setlocal spelloptions=
 setlocal statusline=
-setlocal suffixesadd=.py
+setlocal suffixesadd=
 setlocal swapfile
 setlocal synmaxcol=3000
-if &syntax != 'python'
-setlocal syntax=python
+if &syntax != ''
+setlocal syntax=
 endif
 setlocal tabstop=4
 setlocal tagcase=
@@ -368,18 +372,16 @@ setlocal nowinfixheight
 setlocal nowinfixwidth
 setlocal wrap
 setlocal wrapmargin=0
-silent! normal! zE
-let &fdl = &fdl
-let s:l = 474 - ((11 * winheight(0) + 12) / 24)
+let s:l = 1 - ((0 * winheight(0) + 4) / 9)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 474
+keepjumps 1
 normal! 0
 wincmd w
 argglobal
-2argu
-balt simple_damage.py
+if bufexists(fnamemodify("../../diva/iterative_implicit_ssa.py", ":p")) | buffer ../../diva/iterative_implicit_ssa.py | else | edit ../../diva/iterative_implicit_ssa.py | endif
+balt simple_damage_staggered.py
 setlocal autoindent
 setlocal backupcopy=
 setlocal nobinary
@@ -437,7 +439,7 @@ setlocal imsearch=-1
 setlocal include=^\\s*\\(from\\|import\\)
 setlocal includeexpr=substitute(substitute(substitute(v:fname,b:grandparent_match,b:grandparent_sub,''),b:parent_match,b:parent_sub,''),b:child_match,b:child_sub,'g')
 setlocal indentexpr=python#GetIndent(v:lnum)
-setlocal indentkeys=0{,0},0),0],:,!^F,o,O,e,<:>,=elif,=except
+setlocal indentkeys=0{,0},0),0],:,0#,!^F,o,O,e,<:>,=elif,=except
 setlocal noinfercase
 setlocal iskeyword=@,48-57,_,192-255
 setlocal keywordprg=python3\ -m\ pydoc
@@ -505,18 +507,18 @@ setlocal wrap
 setlocal wrapmargin=0
 silent! normal! zE
 let &fdl = &fdl
-let s:l = 432 - ((9 * winheight(0) + 11) / 23)
+let s:l = 184 - ((18 * winheight(0) + 19) / 38)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 432
+keepjumps 184
 normal! 0
 wincmd w
-exe 'vert 1resize ' . ((&columns * 89 + 89) / 178)
-exe '2resize ' . ((&lines * 24 + 25) / 50)
-exe 'vert 2resize ' . ((&columns * 88 + 89) / 178)
-exe '3resize ' . ((&lines * 23 + 25) / 50)
-exe 'vert 3resize ' . ((&columns * 88 + 89) / 178)
+exe 'vert 1resize ' . ((&columns * 118 + 89) / 178)
+exe '2resize ' . ((&lines * 9 + 25) / 50)
+exe 'vert 2resize ' . ((&columns * 59 + 89) / 178)
+exe '3resize ' . ((&lines * 38 + 25) / 50)
+exe 'vert 3resize ' . ((&columns * 59 + 89) / 178)
 tabnext 1
 if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0
   silent exe 'bwipe ' . s:wipebuf

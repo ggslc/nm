@@ -16,8 +16,8 @@ np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
 def make_vto_nl(h, beta, mu_cc):
 
     mu_face = jnp.zeros((n+1,))
-    mu_face = mu_face.at[1:n-1].set(0.5 * (mu_cc[1:n-1] + mu_cc[:n-2]))
-    mu_face = mu_face.at[0].set(mu_cc[0])
+    mu_face = mu_face.at[1:-2].set(0.5 * (mu_cc[:-2] + mu_cc[1:-1]))
+    mu_face = mu_face.at[0].set(mu_cc[1])
 
     s_gnd = h + b
     s_flt = h*(1-0.917/1.027)
@@ -28,44 +28,115 @@ def make_vto_nl(h, beta, mu_cc):
     def vto(u, d):
 
         d_face = jnp.zeros((n+1,))
-        d_face = d_face.at[1:n-1].set(0.5 * (d[1:n-1] + d[:n-2]))
+        d_face = d_face.at[1:-2].set(0.5 * (d[1:-1] + d[:-2]))
+        d_face = d_face.at[-2].set(d_face[-3])
         d_face = d_face.at[0].set(d[0])
 
 
         dudx = jnp.zeros((n+1,))
-        dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
+        dudx = dudx.at[1:-2].set((u[1:-1] - u[:-2])/dx)
+        #dudx = dudx.at[-2].set(dudx[-3]) #commented out means leave as zero
         #set reflection boundary condition
         dudx = dudx.at[0].set(2*u[0]/dx)
-
         
         sliding = beta * u * dx
+
         sliding = sliding.at[:].set(jnp.where(h>0, jnp.where(s_gnd>s_flt, sliding, 0), u * dx))
 
         
         h_face = jnp.zeros((n+1,))
-        h_face = h_face.at[1:n-1].set(0.5 * (h[1:n-1] + h[:n-2]))
+        h_face = h_face.at[1:-2].set(0.5 * (h[1:-1] + h[:-2]))
+        #h_face = h_face.at[-1].set(h[-1])
         h_face = h_face.at[0].set(h[0])
 
 
         mu_face_nl = mu_face * (jnp.abs(dudx)+epsilon)**(-2/3)
+        #print(mu_face)
+        #print(mu_face_nl)
+        #raise
+
+
+        #d_face = d_face.at[-10].set(0.75)
+        #print(d_face)
+
+        flux = h_face * (1-d_face) * mu_face_nl * dudx
+
+
+        h_grad_s = jnp.zeros((n,))
+        #h_grad_s = h_grad_s.at[1:-2].set(0.917 * h[1:-2] * 0.5 * (s[2:-1] - s[:-3]))
+        #h_grad_s = h_grad_s.at[-2].set(-0.917 * h[-2] * 0.5*(s[-3] + s[-2]))
+        h_grad_s = h_grad_s.at[1:-1].set(0.917 * h[1:-1] * 0.5 * (s[2:] - s[:-2]))
+        h_grad_s = h_grad_s.at[0].set(0.917 * h[0] * 0.5 * (s[1] - s[0]))
+       
+        #print(h_grad_s)
+        #print(h_grad_s[n-1])
+        #print(h_grad_s.shape)
+        #print(h_grad_s[:n-1].shape)
+        #raise
+
+
+        #not sure what to do here... should the various bits have different weights?.
+        #return flux[1:(n+1)] - flux[:n] - 10*h_grad_s - 100*sliding
+        return flux[1:] - flux[:-1] - h_grad_s - sliding
+        
+
+    return vto
+
+
+def make_linear_vto(h, beta):
+
+
+    s_gnd = h + b
+    s_flt = h*(1-0.917/1.027)
+    s = jnp.maximum(s_gnd, s_flt)
+    s = s.at[-1].set(0)
+
+
+    def vto(u, d, mu_face):
+
+        d_face = jnp.zeros((n+1,))
+        d_face = d_face.at[1:-2].set(0.5 * (d[1:-1] + d[:-2]))
+        d_face = d_face.at[-2].set(d_face[-3])
+        d_face = d_face.at[0].set(d[0])
+
+
+        dudx = jnp.zeros((n+1,))
+        dudx = dudx.at[1:-2].set((u[1:-1] - u[:-2])/dx)
+        #dudx = dudx.at[-2].set(dudx[-3]) #commented out means leave as zero
+        #set reflection boundary condition
+        dudx = dudx.at[0].set(2*u[0]/dx)
+        
+        sliding = beta * u * dx
+
+        sliding = sliding.at[:].set(jnp.where(h>0, jnp.where(s_gnd>s_flt, sliding, 0), u * dx))
+
+        
+        h_face = jnp.zeros((n+1,))
+        h_face = h_face.at[1:-2].set(0.5 * (h[1:-1] + h[:-2]))
+        #h_face = h_face.at[-1].set(h[-1])
+        h_face = h_face.at[0].set(h[0])
 
 
         flux = h_face * (1-d_face) * mu_face * dudx
 
 
         h_grad_s = jnp.zeros((n,))
-        h_grad_s = h_grad_s.at[1:n-1].set(0.917 * h[1:n-1] * 0.5 * (s[2:] - s[:n-2]))
+        #h_grad_s = h_grad_s.at[1:-2].set(0.917 * h[1:-2] * 0.5 * (s[2:-1] - s[:-3]))
+        #h_grad_s = h_grad_s.at[-2].set(-0.917 * h[-2] * 0.5*(s[-3] + s[-2]))
+        h_grad_s = h_grad_s.at[1:-1].set(0.917 * h[1:-1] * 0.5 * (s[2:] - s[:-2]))
         h_grad_s = h_grad_s.at[0].set(0.917 * h[0] * 0.5 * (s[1] - s[0]))
+       
+
+        #not sure what to do here... should the various bits have different weights?.
+        #return flux[1:(n+1)] - flux[:n] - 10*h_grad_s - 100*sliding
+        return flux[1:] - flux[:-1] - h_grad_s - sliding
         
-
-
-        return flux[1:(n+1)] - flux[:n] - h_grad_s - sliding
 
     return vto
 
 
 
-def make_adv(h, dt, gamma=0.001, A=1):
+def make_adv(h, dt, gamma=1e5, A=1):
 
     def adv(u, d, d_old):
 
@@ -73,7 +144,8 @@ def make_adv(h, dt, gamma=0.001, A=1):
         hd_old = h*d_old
         
         dudx = jnp.zeros((n,))
-        dudx = dudx.at[1:n-1].set((u[2:n] - u[:n-2])/dx)
+        dudx = dudx.at[1:n-2].set((u[2:n-1] - u[:n-3])/dx)
+        #leaving the last two to be zero
         dudx = dudx.at[0].set((u[1] - u[0])/dx)
         #the last one doesn't matter I don't think
         
@@ -82,8 +154,9 @@ def make_adv(h, dt, gamma=0.001, A=1):
 
         #tau_xx = 0.5 * (1-d) * mu_nl * dudx
 
-        source = gamma * A * dx * ((0.5 * mu_nl * dudx - rho * g * hd)**4)
-
+        source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4)
+        source = source.at[-1].set(0)
+        #print(source)
 
         hd_face = jnp.zeros((n+1,))
         hd_face = hd_face.at[1:n].set(hd[:n-1]) #upwind values
@@ -94,12 +167,48 @@ def make_adv(h, dt, gamma=0.001, A=1):
 
         hd_flux = hd_face * u_face
         hd_flux = hd_flux.at[-1].set(hd_flux[-2])
+        hd_flux = hd_flux.at[0].set(0)
 
         dhd_dt = (hd - hd_old) * dx / dt
 
-        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
+        return dhd_dt - source
+
+        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
         
     return adv
+
+
+
+def make_u_solver(u_trial, num_iterations, d):
+
+    def u_solve():
+
+        vto = make_vto_nl(h, beta, mu)
+
+        #For debugging only, run this
+        #vto(u_trial, jnp.zeros_like(u_trial))
+        #raise
+
+        vto_jac_fn = jacfwd(vto, argnums=0)
+
+        u = u_trial.copy()
+
+        for i in range(num_iterations):
+            vto_jac = vto_jac_fn(u, d)
+            
+            #print(vto_jac)
+            #raise
+
+            du = lalg.solve(vto_jac, -vto(u, d))
+
+            u = u.at[:].set(u + du)
+
+
+            print(jnp.max(jnp.abs(vto(u, d))))
+
+        return u
+
+    return u_solve
 
 
 def solver(u_trial, d_trial, dt, num_iterations, num_timesteps):
@@ -116,6 +225,8 @@ def solver(u_trial, d_trial, dt, num_iterations, num_timesteps):
         d = d_trial.copy()
         d_old = d_trial.copy()
 
+        ds = []
+        us = []
 
         for j in range(num_timesteps):
             print(j)
@@ -127,9 +238,11 @@ def solver(u_trial, d_trial, dt, num_iterations, num_timesteps):
                 full_jacobian = jnp.block(
                                           [[vto_jac[0], vto_jac[1]],
                                           [adv_jac[0], adv_jac[1]]]
-                                )
-                print(full_jacobian)
-                raise
+                                          )[:2*n-1, :2*n-1]
+
+                
+                #print(full_jacobian)
+                #raise
 
                 #print(np.array(vto_jac[0]))
                 #print("-------------------")
@@ -143,17 +256,21 @@ def solver(u_trial, d_trial, dt, num_iterations, num_timesteps):
                 #raise
 
 
-                rhs = jnp.concatenate((-vto(u, d), -advo(u, d, d_old)))
+                rhs = jnp.concatenate((-vto(u, d), -adv(u, d, d_old)[:n-1]))
 
                 dvar = lalg.solve(full_jacobian, rhs)
 
+       #         print(dvar)
+
                 u = u.at[:].set(u+dvar[:n])
-                d = d.at[:].set(d+dvar[n:])
+                d = d.at[:n-1].set(d[:n-1]+dvar[n:2*n-1])
+
+                print(jnp.max(jnp.abs(vto(u, d))), jnp.max(jnp.abs(adv(u, d, d_old))))
 
 
 
-
-            dus.append([d, u])
+            ds.append(d)
+            us.append(u)
 
 #            plotboth(h, u, title="Timestep {}, iteration {}".format(j+1, i),\
 #                    savepath="../misc/full_implicit_tests/{}_{}.png".format(j+1,i),\
@@ -162,11 +279,132 @@ def solver(u_trial, d_trial, dt, num_iterations, num_timesteps):
             d_old = d.copy()
 
 
+            #plt.plot(d)
+            #plt.ylim(-0.2, 1.2)
+            #plt.show()
+            #
+            #plt.plot(u)
+            #plt.show()
 
-        return u, d, dus
+        return u, d, ds, us
 
     return newton_solve
 
+
+def make_picard_iterator(mu_centres_zero, h, beta, d, iterations):
+
+    mu_faces_zero = jnp.zeros((n+1,))
+    mu_faces_zero = mu_faces_zero.at[1:-2].set(0.5 * (mu_centres_zero[:-2] + mu_centres_zero[1:-1]))
+    mu_faces_zero = mu_faces_zero.at[0].set(mu_centres_zero[1])
+   
+    def new_mu(u):
+    
+        dudx = jnp.zeros((n+1,))
+        dudx = dudx.at[1:-1].set((u[1:] - u[:-1])/dx)
+        #set reflection boundary condition
+        dudx = dudx.at[0].set(2*u[0]/dx)
+    
+        mu_nl = mu_faces_zero * (jnp.abs(dudx)+epsilon)**(-2/3)
+    
+        return mu_nl
+    
+
+    def iterator(u_init):    
+
+        vto = make_linear_vto(h, beta)
+        jac_vto_fn = jacfwd(vto, argnums=0)
+
+
+        mu = mu_faces_zero.copy()
+        u = u_init.copy()
+
+        prev_residual = 1
+
+        for i in range(iterations):
+            
+            residual = jnp.max(jnp.abs(vto(u, d, mu)))
+            print(residual)
+
+            mu = new_mu(u)
+            
+            jac_vto = jac_vto_fn(u, d, mu)
+            u = u + lalg.solve(jac_vto, -vto(u, d, mu))
+            
+            
+            if (residual < 1e-7) or (jnp.abs(residual-prev_residual) < 1e-8):
+                break
+
+            prev_residual = residual
+
+        residual = jnp.max(jnp.abs(vto(u, d, mu)))
+        print(residual)
+
+        return u
+       
+    return iterator
+
+    
+def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
+
+    mu_faces_zero = jnp.zeros((n+1,))
+    mu_faces_zero = mu_faces_zero.at[1:-2].set(0.5 * (mu_centres_zero[:-2] + mu_centres_zero[1:-1]))
+    mu_faces_zero = mu_faces_zero.at[0].set(mu_centres_zero[1])
+   
+    def new_mu(u):
+    
+        dudx = jnp.zeros((n+1,))
+        dudx = dudx.at[1:-1].set((u[1:] - u[:-1])/dx)
+        #set reflection boundary condition
+        dudx = dudx.at[0].set(2*u[0]/dx)
+    
+        mu_nl = mu_faces_zero * (jnp.abs(dudx)+epsilon)**(-2/3)
+    
+        return mu_nl
+    
+
+    def iterator(u_init, d_init):
+
+        vto = make_linear_vto(h, beta)
+        jac_vto_fn = jacfwd(vto, argnums=0)
+
+        adv = make_adv(h, dt)
+        jac_adv_fn = jacfwd(adv, argnums=1)
+
+        mu = mu_faces_zero.copy()
+        u = u_init.copy()
+        d = d_init.copy()
+        d_old = d_init.copy()
+
+#        prev_residual_combo = 1
+
+        for i in range(iterations):
+            
+#            residual1 = jnp.max(jnp.abs(vto(u, d, mu)))
+#            residual2 = jnp.max(jnp.abs(adv(u, d, d_old)))
+#            print(residual1, residual2)
+
+            mu = new_mu(u)
+            
+            jac_vto = jac_vto_fn(u, d, mu)
+            u = u + lalg.solve(jac_vto, -vto(u, d, mu))
+
+            adv_vto = jac_adv_fn(u, d, d_old)
+            d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1]))
+
+#TODO: MAKE THIS JIT COMPATIBLE
+#            if ((residual1 < 1e-7) and (residual2 < 1e-7)) or\
+#               (jnp.abs((residual1+residual2)-prev_residual_combo) < 1e-8):
+#                break
+
+#            prev_residual_combo = residual1+residual2
+#
+#        residual_1 = jnp.max(jnp.abs(vto(u, d, mu)))
+#        residual_2 = jnp.max(jnp.abs(adv(u, d, d_old)))
+#        print(residual1, residual2)
+
+        return u, d
+       
+    return iterator
 
 
 def plotgeom(thk):
@@ -195,6 +433,72 @@ def plotgeom(thk):
     plt.show()
 
 
+def plotboths(ds, speeds, upper_lim, title=None, savepath=None, axis_limits=None, show_plots=True):
+
+    fig, ax1 = plt.subplots(figsize=(10,6))
+    ax2 = ax1.twinx()
+
+    n = len(ds)
+
+    cmap = cm.rainbow
+    cs = cmap(jnp.linspace(0, 1, n))
+
+    for d, speed, c1 in list(zip(ds, us, cs)):
+        ax1.plot(d, c=c1)
+        ax2.plot(speed, color=c1, marker=".", linewidth=0)
+
+    #add colorbar
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=upper_lim))
+    sm._A = []
+    cbar = fig.colorbar(sm, ax=ax1, orientation='horizontal', pad=0.15)
+    cbar.set_label('timestep')
+
+    #axis labels
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("damage")
+    ax2.set_ylabel("speed")
+
+    if axis_limits is not None:
+        ax1.set_ylim(axis_limits[0])
+        ax2.set_ylim(axis_limits[1])
+
+    if title is not None:
+        plt.title(title)
+    if savepath is not None:
+        plt.savefig(savepath)
+
+    if show_plots:
+        plt.show()
+
+
+def plotboth(d, speed, title=None, savepath=None, axis_limits=None, show_plots=True):
+
+    fig, ax1 = plt.subplots(figsize=(10,6))
+    ax2 = ax1.twinx()
+
+    ax1.plot(d, c='k')
+    ax2.plot(speed, color='blue', marker=".", linewidth=0)
+
+    #axis labels
+    ax1.set_xlabel("x")
+    ax1.set_ylabel("damage")
+    ax2.set_ylabel("speed")
+
+    if axis_limits is not None:
+        ax1.set_ylim(axis_limits[0])
+        ax2.set_ylim(axis_limits[1])
+
+    if title is not None:
+        plt.title(title)
+    if savepath is not None:
+        plt.savefig(savepath)
+
+    if show_plots:
+        plt.show()
+
+
+
+
 
 rho = 1
 g = 1
@@ -202,7 +506,7 @@ g = 1
 
 
 lx = 1
-n = 10
+n = 100
 dx = lx/n
 x = jnp.linspace(0,lx,n)
 
@@ -213,7 +517,7 @@ mu = jnp.zeros((n,)) + 1
 #OVERDEEPENED BED
 
 
-h = 5*jnp.exp(-2*x*x)
+h = 5*jnp.exp(-2*x*x*x*x)
 h = h.at[-1].set(0)
 
 
@@ -234,15 +538,18 @@ h = h.at[-1].set(0)
 # #linear sliding, constant beta:
 # beta = jnp.where(s_gnd>s_flt, 1, 0)
 
-phi = 1
-beta = 300 * phi
+p_W = 1.027 * jnp.maximum(0, h-s)
+p_I = 0.917 * h
+phi = 1 - (p_W / p_I)
+#phi = 1
+beta = 3000 * phi
 beta = jnp.where(s_gnd>s_flt, beta, 0)
 
 
 base = s - h
 
 
-epsilon = 1e-10
+epsilon = 1e-6
 
 
 
@@ -251,64 +558,89 @@ epsilon = 1e-10
 #raise
 
 
-dt = 0.0001
-num_iterations = 10
-num_timesteps = 10
 
-u_trial = jnp.exp(x)-1
+
+
+u_trial = 0*(jnp.exp(x)-1)
+
 d_trial = jnp.zeros((n,))
+#d_test = d_test.at[-10:-8].set(0.9)
 
-ns = solver(u_trial, d_trial, dt, num_iterations, num_timesteps)
+iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.01, 60))
 
-u_end, d_end, dus = ns()
+u_t = u_trial.copy()
+d_t = d_trial.copy()
+
+us = [u_t]
+ds = [d_t]
+for i in range(122):
+    u_t, d_t = iterator(u_t, d_t)
+    if i%10==8:
+        print(i)
+        us.append(u_t)
+        ds.append(d_t)
+
+plotboths(ds, us, 118, title=None, savepath=None, axis_limits=None, show_plots=True)
+
+
+raise
+
+
+###PICARD SOLVE FOR U ONLY. Sort of works, convergence a bit shite. Not sure if something's up.
+
+u_trial = 1*(jnp.exp(x)-1)
+#u_trial = jnp.zeros((n,))
+
+d_test = jnp.zeros((n,))
+d_test = d_test.at[-10:-8].set(0.9)
+
+iterator = make_picard_iterator(jnp.ones_like(u_trial), h, beta, d_test, 60)
+u_end = iterator(u_trial)
+
+plt.plot(u_end)
+plt.show()
 
 raise
 
 
 
 
-h_init = h.copy()
-u_init = jnp.zeros((n,)) + 1
-dt = 5e-2
+##Just u using Newton's method. Doesn't reliably converge!!!
 
-rough_cn = 0.7 * dt/dx
-print("cn roughly ", rough_cn)
+d_test = jnp.zeros((n,))
+#d_test = d_test.at[80:81].set(0.75)
 
-mu_face_va = jnp.zeros((n+1,))+1
+#u_trial = 6*(jnp.exp(x)-1)
+u_trial = jnp.zeros((n,))
 
-timesteps = 100
-iterations = 20
+u_solve = make_u_solver(u_trial, 30, d_test)
 
+u_end = u_solve()
 
-h_t = h_init.copy()
-u_t = u_init.copy()
+print(u_end)
 
-
-hs = []
-us = []
+plt.plot(u_end)
+plt.show()
 
 
-#us, hs, mus = do_iterations_nl(h_t, u_t, dt, mu_face_va, beta, iterations)
+raise
 
+##Coupled, time-dependent problem:
 
-for i in range(timesteps):
-    print(i)
-    u_ts, h_ts, mu_ts = do_iterations_nl(h_t, u_t, dt, mu_face_va, beta, iterations)
-    
-    u_t = u_ts[-1]
-    h_t = h_ts[-1]
-    mu_t = mu_ts[-1]
+dt = 0.01
+num_iterations = 30
+num_timesteps = 5
 
-    hs.append(h_t.copy())
-    us.append(u_t.copy())
+u_trial = 6*(jnp.exp(x)-1)
+d_trial = jnp.zeros((n,))
 
+ns = solver(u_trial, d_trial, dt, num_iterations, num_timesteps)
 
-#print(us)
-#print(hs)
-#plotboths(hs[::5], us[::5], iterations)
-plotboths(hs, us, timesteps)
+u_end, d_end, ds, us = ns()
 
-#plotboth(hs[-1], us[-1])
-  
+plotboths(ds, us, num_timesteps, axis_limits=[[-0.2, 1.2], [0,1.5]])
+
+raise
+
 
 
