@@ -154,7 +154,8 @@ def make_adv(h, dt, gamma=1e5, A=1):
 
         #tau_xx = 0.5 * (1-d) * mu_nl * dudx
 
-        source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4)
+        source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4) #this "works" well
+        #source = gamma * A * dx * ((0.5 * mu_nl * dudx - rho * g * hd)**4) #this reaches steady state nicely
         source = source.at[-1].set(0)
         #print(source)
 
@@ -171,9 +172,9 @@ def make_adv(h, dt, gamma=1e5, A=1):
 
         dhd_dt = (hd - hd_old) * dx / dt
 
-        return dhd_dt - source
+        #return dhd_dt - source
 
-        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
+        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
         
     return adv
 
@@ -390,6 +391,8 @@ def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
 
             adv_vto = jac_adv_fn(u, d, d_old)
             d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1]))
+            d = jnp.minimum(d, 0.95)
+            d = jnp.maximum(d, 0)
 
 #TODO: MAKE THIS JIT COMPATIBLE
 #            if ((residual1 < 1e-7) and (residual2 < 1e-7)) or\
@@ -566,21 +569,21 @@ u_trial = 0*(jnp.exp(x)-1)
 d_trial = jnp.zeros((n,))
 #d_test = d_test.at[-10:-8].set(0.9)
 
-iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.01, 60))
+iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.001, 60))
 
 u_t = u_trial.copy()
 d_t = d_trial.copy()
 
 us = [u_t]
 ds = [d_t]
-for i in range(122):
+for i in range(1359):
     u_t, d_t = iterator(u_t, d_t)
-    if i%10==8:
+    if i%50==8:
         print(i)
         us.append(u_t)
         ds.append(d_t)
 
-plotboths(ds, us, 118, title=None, savepath=None, axis_limits=None, show_plots=True)
+plotboths(ds, us, 1358, title=None, savepath=None, axis_limits=None, show_plots=True)
 
 
 raise
