@@ -155,6 +155,7 @@ def make_adv(h, dt, gamma=1e5, A=1):
         #tau_xx = 0.5 * (1-d) * mu_nl * dudx
 
         source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4) #this "works" well
+        #source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0.01*rho * g * hd*(1-d))**4) #just messing about adding the (1-d) and changing rho etc.
         #source = gamma * A * dx * ((0.5 * mu_nl * dudx - rho * g * hd)**4) #this reaches steady state nicely
         source = source.at[-1].set(0)
         #print(source)
