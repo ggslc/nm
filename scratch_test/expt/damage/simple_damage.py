@@ -154,9 +154,10 @@ def make_adv(h, dt, gamma=1e5, A=1):
 
         #tau_xx = 0.5 * (1-d) * mu_nl * dudx
 
-        source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4) #this "works" well
+        #source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4) #this "works" well
         #source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0.01*rho * g * hd*(1-d))**4) #just messing about adding the (1-d) and changing rho etc.
-        #source = gamma * A * dx * ((0.5 * mu_nl * dudx - rho * g * hd)**4) #this reaches steady state nicely
+        source = gamma * A * dx * ((0.5 * mu_nl * dudx - rho * g * hd)**4) #this reaches steady state nicely
+        #there might be something about source term linearisation I've forgotten about... Patankar said somethibg...
         source = source.at[-1].set(0)
         #print(source)
 
@@ -168,6 +169,7 @@ def make_adv(h, dt, gamma=1e5, A=1):
         u_face = u_face.at[-2].set(u[-2])
 
         hd_flux = hd_face * u_face
+        hd_flux = hd_flux.at[-2].set(hd_flux[-3]) #stop everythin piling up at the end.
         hd_flux = hd_flux.at[-1].set(hd_flux[-2])
         hd_flux = hd_flux.at[0].set(0)
 
@@ -175,7 +177,8 @@ def make_adv(h, dt, gamma=1e5, A=1):
 
         #return dhd_dt - source
 
-        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
+        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
+        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt
         
     return adv
 
@@ -345,7 +348,54 @@ def make_picard_iterator(mu_centres_zero, h, beta, d, iterations):
        
     return iterator
 
+
+
+def make_picard_adv_only(u, mu_centres_zero, h, beta, dt, iterations):
+
+    mu_faces_zero = jnp.zeros((n+1,))
+    mu_faces_zero = mu_faces_zero.at[1:-2].set(0.5 * (mu_centres_zero[:-2] + mu_centres_zero[1:-1]))
+    mu_faces_zero = mu_faces_zero.at[0].set(mu_centres_zero[1])
+   
+
+    def iterator(d_init):
+
+        adv = make_adv(h, dt)
+        jac_adv_fn = jacfwd(adv, argnums=1)
+
+        d = d_init.copy()
+        d_old = d_init.copy()
+
+#        prev_residual_combo = 1
+
+        for i in range(iterations):
+            
+#            residual1 = jnp.max(jnp.abs(vto(u, d, mu)))
+#            residual2 = jnp.max(jnp.abs(adv(u, d, d_old)))
+#            print(residual1, residual2)
+
+            adv_vto = jac_adv_fn(u, d, d_old)
+            d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1]))
+            d = jnp.minimum(d, 0.95)
+            d = jnp.maximum(d, 0)
+
+#TODO: MAKE THIS JIT COMPATIBLE
+#            if ((residual1 < 1e-7) and (residual2 < 1e-7)) or\
+#               (jnp.abs((residual1+residual2)-prev_residual_combo) < 1e-8):
+#                break
+
+#            prev_residual_combo = residual1+residual2
+#
+#        residual_1 = jnp.max(jnp.abs(vto(u, d, mu)))
+#        residual_2 = jnp.max(jnp.abs(adv(u, d, d_old)))
+#        print(residual1, residual2)
+
+        return d
+       
+    return iterator
     
+
+
+
 def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
 
     mu_faces_zero = jnp.zeros((n+1,))
@@ -564,27 +614,70 @@ epsilon = 1e-6
 
 
 
+u_test = jnp.array([3.9e-05,1.2e-04,2.0e-04,2.8e-04,3.6e-04,4.4e-04,5.3e-04,6.2e-04,7.0e-04,8.0e-04,8.9e-04,9.9e-04,1.1e-03,1.2e-03,1.3e-03,1.4e-03,1.6e-03,1.7e-03,1.8e-03,2.0e-03,2.1e-03,2.3e-03,2.5e-03,2.6e-03,2.8e-03,3.0e-03,3.2e-03,3.5e-03,3.7e-03,3.9e-03,4.2e-03,4.5e-03,4.7e-03,5.0e-03,5.3e-03,5.7e-03,6.0e-03,6.3e-03,6.7e-03,7.1e-03,7.5e-03,7.9e-03,8.3e-03,8.7e-03,9.2e-03,9.6e-03,1.0e-02,1.1e-02,1.1e-02,1.2e-02,1.2e-02,1.3e-02,1.3e-02,1.4e-02,1.4e-02,1.5e-02,1.5e-02,1.6e-02,1.7e-02,1.7e-02,1.8e-02,1.8e-02,1.9e-02,2.0e-02,2.0e-02,2.1e-02,2.2e-02,2.3e-02,2.3e-02,2.4e-02,2.5e-02,2.5e-02,2.6e-02,2.6e-02,2.7e-02,2.7e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,0.0e+00])
+u_const = jnp.ones_like(x)/100
+h_const = jnp.ones_like(x)
+#set end to zero:
+h_const = h_const.at[-1].set(0)
+
+
+#iterator = jax.jit(make_picard_adv_only(u_test, jnp.ones_like(u_test), h, beta, 0.1, 100))
+iterator = jax.jit(make_picard_adv_only(u_const, jnp.ones_like(u_test), h, beta, 0.1, 100))
+
+d_start = jnp.zeros((n,))
+d_start = d_start.at[-80:-75].set(0.9)
+
+d_t = d_start.copy()
+
+ds = [d_t]
+
+
+for i in range(1001):
+    d_t = iterator(d_t)
+
+    if not i%50:
+        print(i)
+        ds.append(d_t)
+
+plt.figure(figsize=(5,5))
+for d_t in ds:
+    plt.plot(d_t)
+plt.show()
+
+raise
+
+################################
+
+
+###PICARD JOINT PROBLEM:
+#-----------------------#
 
 u_trial = 0*(jnp.exp(x)-1)
 
 d_trial = jnp.zeros((n,))
 #d_test = d_test.at[-10:-8].set(0.9)
 
-iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.001, 60))
+iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.2, 40))
+
+#NOTE: something very wrong with advection probably as we're waaaaaaaay below cfl limit and
+#it looks unstable. Test advection only.
 
 u_t = u_trial.copy()
 d_t = d_trial.copy()
 
 us = [u_t]
 ds = [d_t]
-for i in range(1359):
+for i in range(2301):
     u_t, d_t = iterator(u_t, d_t)
-    if i%50==8:
+    #print(u_t)
+    #plotboth(d_t, u_t, title=None, savepath=None, axis_limits=None, show_plots=True)
+    
+    if i%100==0:
         print(i)
         us.append(u_t)
         ds.append(d_t)
 
-plotboths(ds, us, 1358, title=None, savepath=None, axis_limits=None, show_plots=True)
+plotboths(ds, us, 2300, title=None, savepath=None, axis_limits=None, show_plots=True)
 
 
 raise
