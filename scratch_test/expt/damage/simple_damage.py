@@ -135,6 +135,50 @@ def make_linear_vto(h, beta):
     return vto
 
 
+def make_adv_expt(h, dt, gamma=1e5, A=1):
+
+    def adv(u, d_old):
+
+        hd_old = h*d_old
+        
+        dudx = jnp.zeros((n,))
+        dudx = dudx.at[1:n-2].set((u[2:n-1] - u[:n-3])/dx)
+        #leaving the last two to be zero
+        dudx = dudx.at[0].set((u[1] - u[0])/dx)
+        #the last one doesn't matter I don't think
+        
+
+        mu_nl = mu * (jnp.abs(dudx)+epsilon)**(-2/3)
+
+        #tau_xx = 0.5 * (1-d) * mu_nl * dudx
+
+        #source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0*rho * g * hd)**4) #this "works" well
+        #source = 0.002*gamma * A * dx * ((0.5 * mu_nl * dudx - 0.01*rho * g * hd*(1-d))**4) #just messing about adding the (1-d) and changing rho etc.
+        source = gamma * A * dx * ((0.5 * mu_nl * dudx - rho * g * hd_old)**4) #this reaches steady state nicely
+        #there might be something about source term linearisation I've forgotten about... Patankar said somethibg...
+        source = source.at[-1].set(0)
+        #print(source)
+
+        hd_face = jnp.zeros((n+1,))
+        hd_face = hd_face.at[1:n].set(hd_old[:n-1]) #upwind values
+
+        u_face = jnp.zeros((n+1,))
+        u_face = u_face.at[1:n-1].set(0.5*(u[1:n-1]+u[:n-2]))
+        u_face = u_face.at[-2].set(u[-2])
+
+        hd_flux = hd_face * u_face
+        hd_flux = hd_flux.at[-2].set(hd_flux[-3]) #stop everythin piling up at the end.
+        hd_flux = hd_flux.at[-1].set(hd_flux[-2])
+        hd_flux = hd_flux.at[0].set(0)
+
+
+        d_new = d_old - (dt / dx) * ( hd_flux[1:(n+1)] - hd_flux[:n] )
+
+
+        return d_new
+        
+    return adv
+
 
 def make_adv(h, dt, gamma=1e5, A=1):
 
@@ -615,14 +659,50 @@ epsilon = 1e-6
 
 
 u_test = jnp.array([3.9e-05,1.2e-04,2.0e-04,2.8e-04,3.6e-04,4.4e-04,5.3e-04,6.2e-04,7.0e-04,8.0e-04,8.9e-04,9.9e-04,1.1e-03,1.2e-03,1.3e-03,1.4e-03,1.6e-03,1.7e-03,1.8e-03,2.0e-03,2.1e-03,2.3e-03,2.5e-03,2.6e-03,2.8e-03,3.0e-03,3.2e-03,3.5e-03,3.7e-03,3.9e-03,4.2e-03,4.5e-03,4.7e-03,5.0e-03,5.3e-03,5.7e-03,6.0e-03,6.3e-03,6.7e-03,7.1e-03,7.5e-03,7.9e-03,8.3e-03,8.7e-03,9.2e-03,9.6e-03,1.0e-02,1.1e-02,1.1e-02,1.2e-02,1.2e-02,1.3e-02,1.3e-02,1.4e-02,1.4e-02,1.5e-02,1.5e-02,1.6e-02,1.7e-02,1.7e-02,1.8e-02,1.8e-02,1.9e-02,2.0e-02,2.0e-02,2.1e-02,2.2e-02,2.3e-02,2.3e-02,2.4e-02,2.5e-02,2.5e-02,2.6e-02,2.6e-02,2.7e-02,2.7e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,0.0e+00])
+
+#plt.plot(u_test)
+#plt.show()
+
+u_test = 0.04*(x**2)
+
 u_const = jnp.ones_like(x)/100
 h_const = jnp.ones_like(x)
 #set end to zero:
 h_const = h_const.at[-1].set(0)
 
 
-#iterator = jax.jit(make_picard_adv_only(u_test, jnp.ones_like(u_test), h, beta, 0.1, 100))
-iterator = jax.jit(make_picard_adv_only(u_const, jnp.ones_like(u_test), h, beta, 0.1, 100))
+
+
+##Explicit version:
+
+
+#d_start = jnp.zeros((n,))
+#d_start = d_start.at[-80:-75].set(0.9)
+#
+#d_t = d_start.copy()
+#
+#ds = [d_t]
+#
+#advector = make_adv_expt(h_const, 0.1)
+#
+#for i in range(101):
+#    d_t = advector(u_test, d_t)
+#
+#    if not i%10:
+#        print(i)
+#        ds.append(d_t)
+#
+#plt.figure(figsize=(5,5))
+#for d_t in ds:
+#    plt.plot(d_t)
+#plt.show()
+#
+#
+#
+#raise
+
+iterator = jax.jit(make_picard_adv_only(u_test, jnp.ones_like(u_test), h_const, beta, 1, 10))
+#iterator = jax.jit(make_picard_adv_only(u_const, jnp.ones_like(u_test), h_const, beta, 0.1, 100))
 
 d_start = jnp.zeros((n,))
 d_start = d_start.at[-80:-75].set(0.9)
@@ -632,12 +712,11 @@ d_t = d_start.copy()
 ds = [d_t]
 
 
-for i in range(1001):
+for i in range(2):
     d_t = iterator(d_t)
 
-    if not i%50:
-        print(i)
-        ds.append(d_t)
+    print(i)
+    ds.append(d_t)
 
 plt.figure(figsize=(5,5))
 for d_t in ds:
