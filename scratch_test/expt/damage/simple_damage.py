@@ -4,13 +4,14 @@ import jax.numpy as jnp
 from jax import jacfwd, jacrev
 import jax.scipy.linalg as lalg
 from jax.scipy.optimize import minimize
+from jax.lax import while_loop
 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 
-np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
+np.set_printoptions(precision=2, suppress=False, linewidth=np.inf)
 
 
 def make_vto_nl(h, beta, mu_cc):
@@ -221,8 +222,8 @@ def make_adv(h, dt, gamma=1e5, A=1):
 
         #return dhd_dt - source
 
-        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
-        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt
+        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
+        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt
         
     return adv
 
@@ -446,6 +447,12 @@ def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
     mu_faces_zero = mu_faces_zero.at[1:-2].set(0.5 * (mu_centres_zero[:-2] + mu_centres_zero[1:-1]))
     mu_faces_zero = mu_faces_zero.at[0].set(mu_centres_zero[1])
    
+    vto = make_linear_vto(h, beta)
+    jac_vto_fn = jacfwd(vto, argnums=0)
+
+    adv = make_adv(h, dt)
+    jac_adv_fn = jacfwd(adv, argnums=1)
+
     def new_mu(u):
     
         dudx = jnp.zeros((n+1,))
@@ -458,15 +465,41 @@ def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
         return mu_nl
     
 
+    def condition(carry):
+        _,_,_, residual_combo, i = carry
+        return (residual_combo > 1e-5) & (i < iterations)
+
+
+    def iterate(carry):
+        u, d, d_old, residual_combo, i = carry
+
+        mu = new_mu(u)
+
+        jac_vto = jac_vto_fn(u, d, mu)
+        u = u + lalg.solve(jac_vto, -vto(u, d, mu))
+
+        adv_vto = jac_adv_fn(u, d, d_old)
+        #d = d.at[:-1].set(d[:-1] + 0.01*lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1])) #relaxation solves nothing
+        d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1]))
+        d = jnp.minimum(d, 0.95)
+        d = jnp.maximum(d, 0)
+
+        residual1 = jnp.max(jnp.abs(vto(u, d, mu)))
+        residual2 = jnp.max(jnp.abs(adv(u, d, d_old)))
+        residual_combo = residual1+residual2
+
+        return u, d, d_old, residual_combo, i+1
+
+
     def iterator(u_init, d_init):
 
-        vto = make_linear_vto(h, beta)
-        jac_vto_fn = jacfwd(vto, argnums=0)
+        u_end, d_end, d_old_end, res, itns = while_loop(condition, iterate, (u_init, d_init, d_init, 1, 0))
 
-        adv = make_adv(h, dt)
-        jac_adv_fn = jacfwd(adv, argnums=1)
+        return u_end, d_end
 
-        mu = mu_faces_zero.copy()
+
+    def iterator_dfct(u_init, d_init):
+
         u = u_init.copy()
         d = d_init.copy()
         d_old = d_init.copy()
@@ -658,21 +691,27 @@ epsilon = 1e-6
 
 
 
-u_test = jnp.array([3.9e-05,1.2e-04,2.0e-04,2.8e-04,3.6e-04,4.4e-04,5.3e-04,6.2e-04,7.0e-04,8.0e-04,8.9e-04,9.9e-04,1.1e-03,1.2e-03,1.3e-03,1.4e-03,1.6e-03,1.7e-03,1.8e-03,2.0e-03,2.1e-03,2.3e-03,2.5e-03,2.6e-03,2.8e-03,3.0e-03,3.2e-03,3.5e-03,3.7e-03,3.9e-03,4.2e-03,4.5e-03,4.7e-03,5.0e-03,5.3e-03,5.7e-03,6.0e-03,6.3e-03,6.7e-03,7.1e-03,7.5e-03,7.9e-03,8.3e-03,8.7e-03,9.2e-03,9.6e-03,1.0e-02,1.1e-02,1.1e-02,1.2e-02,1.2e-02,1.3e-02,1.3e-02,1.4e-02,1.4e-02,1.5e-02,1.5e-02,1.6e-02,1.7e-02,1.7e-02,1.8e-02,1.8e-02,1.9e-02,2.0e-02,2.0e-02,2.1e-02,2.2e-02,2.3e-02,2.3e-02,2.4e-02,2.5e-02,2.5e-02,2.6e-02,2.6e-02,2.7e-02,2.7e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,2.8e-02,0.0e+00])
-
-#plt.plot(u_test)
-#plt.show()
-
-u_test = 0.04*(x**2)
-
-u_const = jnp.ones_like(x)/100
-h_const = jnp.ones_like(x)
-#set end to zero:
-h_const = h_const.at[-1].set(0)
 
 
+#################################
+#Bits for advection tests:
+
+#u_test = jnp.array([4.06286308e-05, 1.22049154e-04, 2.03960386e-04, 2.86693161e-04, 3.70583002e-04, 4.55971254e-04, 5.43205708e-04, 6.32642419e-04, 7.24646670e-04, 8.19593377e-04, 9.17867990e-04, 1.01986690e-03, 1.12599786e-03, 1.23667973e-03, 1.35234231e-03, 1.47342647e-03, 1.60038169e-03, 1.73366640e-03, 1.87374617e-03, 2.02109152e-03, 2.17617722e-03, 2.33947788e-03, 2.51146685e-03, 2.69261398e-03, 2.88338074e-03, 3.08421929e-03, 3.29556619e-03, 3.51784076e-03, 3.75144207e-03, 3.99674522e-03, 4.25409665e-03, 4.52381093e-03, 4.80616884e-03, 5.10141253e-03, 5.40974690e-03, 5.73133165e-03, 6.06628321e-03, 6.41467143e-03, 6.77652191e-03, 7.15181092e-03, 7.54047092e-03, 7.94238970e-03, 8.35741218e-03, 8.78534093e-03, 9.22594592e-03, 9.67896264e-03, 1.01441033e-02, 1.06210560e-02, 1.11094965e-02, 1.16090979e-02, 1.21195298e-02, 1.26404697e-02, 1.31716151e-02, 1.37126809e-02, 1.42634129e-02, 1.48235867e-02, 1.53930075e-02, 1.59715042e-02, 1.65589228e-02, 1.71551052e-02, 1.77598596e-02, 1.83729082e-02, 1.89938471e-02, 1.96220297e-02, 2.02564690e-02, 2.08956860e-02, 2.15375088e-02, 2.21788380e-02, 2.28153709e-02, 2.34412868e-02, 2.40489636e-02, 2.46287491e-02, 2.51689311e-02, 2.56560873e-02, 2.60760337e-02, 2.64156479e-02, 2.66657956e-02, 2.68252064e-02, 2.69045290e-02, 2.69324314e-02, 2.69446224e-02, 2.69553512e-02, 2.69647520e-02, 2.69729421e-02, 2.69800462e-02, 2.69861743e-02, 2.69914325e-02, 2.69959215e-02, 2.69997343e-02, 2.70029511e-02, 2.70056520e-02, 2.70079058e-02, 2.70097777e-02, 2.70113200e-02, 2.70125866e-02, 2.70136185e-02, 2.70144548e-02, 2.70151310e-02, 2.70156711e-02, 0.00000000e+00])
+#
+##plt.plot(u_test)
+##plt.show()
+#
+##u_test = 0.04*(x**2)
+#
+#u_const = jnp.ones_like(x)/100
+#h_const = jnp.ones_like(x)
+##set end to zero:
+#h_const = h_const.at[-1].set(0)
 
 
+
+
+###################################
 ##Explicit version:
 
 
@@ -701,32 +740,43 @@ h_const = h_const.at[-1].set(0)
 #
 #raise
 
-iterator = jax.jit(make_picard_adv_only(u_test, jnp.ones_like(u_test), h_const, beta, 1, 10))
-#iterator = jax.jit(make_picard_adv_only(u_const, jnp.ones_like(u_test), h_const, beta, 0.1, 100))
-
-d_start = jnp.zeros((n,))
-d_start = d_start.at[-80:-75].set(0.9)
-
-d_t = d_start.copy()
-
-ds = [d_t]
 
 
-for i in range(2):
-    d_t = iterator(d_t)
 
-    print(i)
-    ds.append(d_t)
 
-plt.figure(figsize=(5,5))
-for d_t in ds:
-    plt.plot(d_t)
-plt.show()
+###################################
+## IMPLICIT VERSION
 
-raise
+
+
+#iterator = jax.jit(make_picard_adv_only(u_test, jnp.ones_like(u_test), h_const, beta, 1, 10))
+##iterator = jax.jit(make_picard_adv_only(u_const, jnp.ones_like(u_test), h_const, beta, 0.1, 100))
+#
+#d_start = jnp.zeros((n,))
+#d_start = d_start.at[-80:-75].set(0.9)
+#
+#d_t = d_start.copy()
+#
+#ds = [d_t]
+#
+#
+#for i in range(101):
+#    d_t = iterator(d_t)
+#
+#    if not i%10:
+#        print(i)
+#        ds.append(d_t)
+#
+#plt.figure(figsize=(5,5))
+#for d_t in ds:
+#    plt.plot(d_t)
+#plt.show()
+#
+#raise
+
+
 
 ################################
-
 
 ###PICARD JOINT PROBLEM:
 #-----------------------#
@@ -734,19 +784,23 @@ raise
 u_trial = 0*(jnp.exp(x)-1)
 
 d_trial = jnp.zeros((n,))
-#d_test = d_test.at[-10:-8].set(0.9)
+d_test = jnp.zeros((n,))
+d_test = d_test.at[-80:-70].set(0.8)
 
-iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.2, 40))
+iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.02, 10))
+#iterator = make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.2, 40)
 
 #NOTE: something very wrong with advection probably as we're waaaaaaaay below cfl limit and
 #it looks unstable. Test advection only.
+#advection seems to work! Maybe something wrong in vel solve...
 
 u_t = u_trial.copy()
+#d_t = d_test.copy() #useful for testing advection
 d_t = d_trial.copy()
 
 us = [u_t]
 ds = [d_t]
-for i in range(2301):
+for i in range(1001):
     u_t, d_t = iterator(u_t, d_t)
     #print(u_t)
     #plotboth(d_t, u_t, title=None, savepath=None, axis_limits=None, show_plots=True)
@@ -756,22 +810,27 @@ for i in range(2301):
         us.append(u_t)
         ds.append(d_t)
 
-plotboths(ds, us, 2300, title=None, savepath=None, axis_limits=None, show_plots=True)
+plotboths(ds, us, 1000, title=None, savepath=None, axis_limits=None, show_plots=True)
 
 
 raise
 
 
+
+
+###################################
 ###PICARD SOLVE FOR U ONLY. Sort of works, convergence a bit shite. Not sure if something's up.
 
-u_trial = 1*(jnp.exp(x)-1)
-#u_trial = jnp.zeros((n,))
+#u_trial = 1*(jnp.exp(x)-1)
+u_trial = jnp.zeros((n,))
 
 d_test = jnp.zeros((n,))
-d_test = d_test.at[-10:-8].set(0.9)
+#d_test = d_test.at[-10:-8].set(0.9)
 
-iterator = make_picard_iterator(jnp.ones_like(u_trial), h, beta, d_test, 60)
+iterator = make_picard_iterator(jnp.ones_like(u_trial), h, beta, d_test, 20)
 u_end = iterator(u_trial)
+
+print(u_end)
 
 plt.plot(u_end)
 plt.show()
@@ -781,6 +840,7 @@ raise
 
 
 
+###################################
 ##Just u using Newton's method. Doesn't reliably converge!!!
 
 d_test = jnp.zeros((n,))
@@ -801,7 +861,11 @@ plt.show()
 
 raise
 
-##Coupled, time-dependent problem:
+
+
+
+###################################
+##Coupled, time-dependent problem, Newton:
 
 dt = 0.01
 num_iterations = 30
