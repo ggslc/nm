@@ -220,10 +220,9 @@ def make_adv(h, dt, gamma=1e5, A=1):
 
         dhd_dt = (hd - hd_old) * dx / dt
 
-        #return dhd_dt - source
-
-        return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source
-        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt
+        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt - source #full
+        return dhd_dt - source #no advection
+        #return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt #no source
         
     return adv
 
@@ -453,6 +452,8 @@ def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
     adv = make_adv(h, dt)
     jac_adv_fn = jacfwd(adv, argnums=1)
 
+
+
     def new_mu(u):
     
         dudx = jnp.zeros((n+1,))
@@ -464,14 +465,20 @@ def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
     
         return mu_nl
     
+    ##for debugging:
+    #jac_vto = jac_vto_fn(u_trial, d_trial, new_mu(u_trial))
+    #jac_adv = jac_adv_fn(u_trial, d_trial, d_trial)
+    #print(jac_vto)
+    #print(jac_adv)
+    #raise
 
-    def condition(carry):
-        _,_,_, residual_combo, i = carry
+    def condition(state):
+        _,_,_, residual_combo, i = state
         return (residual_combo > 1e-5) & (i < iterations)
 
 
-    def iterate(carry):
-        u, d, d_old, residual_combo, i = carry
+    def iterate(state):
+        u, d, d_old, residual_combo, i = state
 
         mu = new_mu(u)
 
@@ -479,8 +486,8 @@ def make_picard_iterator_full(mu_centres_zero, h, beta, dt, iterations):
         u = u + lalg.solve(jac_vto, -vto(u, d, mu))
 
         adv_vto = jac_adv_fn(u, d, d_old)
-        #d = d.at[:-1].set(d[:-1] + 0.01*lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1])) #relaxation solves nothing
-        d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1]))
+        d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1])) #relaxation solves nothing
+        #d = d.at[:-1].set(d[:-1] + lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d_old)[:-1]))
         d = jnp.minimum(d, 0.95)
         d = jnp.maximum(d, 0)
 
@@ -787,7 +794,7 @@ d_trial = jnp.zeros((n,))
 d_test = jnp.zeros((n,))
 d_test = d_test.at[-80:-70].set(0.8)
 
-iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.02, 10))
+iterator = jax.jit(make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.005, 30))
 #iterator = make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.2, 40)
 
 #NOTE: something very wrong with advection probably as we're waaaaaaaay below cfl limit and
