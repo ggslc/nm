@@ -17,7 +17,7 @@ np.set_printoptions(precision=2, suppress=False, linewidth=np.inf)
 def make_vto_nl(h, beta, mu_cc):
 
     mu_face = jnp.zeros((n+1,))
-    mu_face = mu_face.at[:-2].set(0.5 * (mu_cc[:-2] + mu_cc[1:-1]))
+    mu_face = mu_face.at[1:-2].set(0.5 * (mu_cc[:-2] + mu_cc[1:-1]))
     mu_face = mu_face.at[0].set(mu_cc[1])
 
     s_gnd = h + b
@@ -260,6 +260,19 @@ def make_adv_linear(h, dt):
     return adv
 
 
+def make_adv_no_source_no_adv(h, dt):
+
+    def adv(u, d, d_old):
+        hd = h*d
+        hd_old = h*d_old
+
+        dhd_dt = (hd - hd_old) * dx / dt
+
+        return dhd_dt
+        
+    return adv
+
+
 def make_adv_no_source(h, dt):
 
     def adv(u, d, d_old):
@@ -281,7 +294,6 @@ def make_adv_no_source(h, dt):
         dhd_dt = (hd - hd_old) * dx / dt
 
         return hd_flux[1:(n+1)] - hd_flux[:n] + dhd_dt #full
-        #return dhd_dt
         
     return adv
 
@@ -418,8 +430,8 @@ def make_picard_iterator(mu_centres_zero, h, beta, d, iterations):
 
     def iterator(u_init):    
 
-        #vto = make_linear_vto(h, beta)
-        vto = make_vto_nl(h, beta, new_mu(u_init))
+        vto = make_linear_vto(h, beta)
+        #vto = make_vto_nl(h, beta, new_mu(u_init))
         jac_vto_fn = jacfwd(vto, argnums=0)
 
 
@@ -430,17 +442,17 @@ def make_picard_iterator(mu_centres_zero, h, beta, d, iterations):
 
         for i in range(iterations):
             
-            #residual = jnp.max(jnp.abs(vto(u, d, mu))) #linear case
-            residual = jnp.max(jnp.abs(vto(u, d))) #nonlinear case
+            residual = jnp.max(jnp.abs(vto(u, d, mu))) #linear case
+            #residual = jnp.max(jnp.abs(vto(u, d))) #nonlinear case
             print(residual)
 
-            #mu = new_mu(u) #linear case
+            mu = new_mu(u) #linear case
             
-            #jac_vto = jac_vto_fn(u, d, mu) #linear case
-            jac_vto = jac_vto_fn(u, d) #nonlinear case
+            jac_vto = jac_vto_fn(u, d, mu) #linear case
+            #jac_vto = jac_vto_fn(u, d) #nonlinear case
 
-            #u = u + lalg.solve(jac_vto, -vto(u, d, mu)) #linear case
-            u = u + lalg.solve(jac_vto, -vto(u, d)) #nonlinear case
+            u = u + lalg.solve(jac_vto, -vto(u, d, mu)) #linear case
+            #u = u + lalg.solve(jac_vto, -vto(u, d)) #nonlinear case
             
             
             if (residual < 1e-17) or (jnp.abs(residual-prev_residual) < 1e-18):
@@ -448,8 +460,8 @@ def make_picard_iterator(mu_centres_zero, h, beta, d, iterations):
 
             prev_residual = residual
 
-        #residual = jnp.max(jnp.abs(vto(u, d, mu))) #linear case
-        residual = jnp.max(jnp.abs(vto(u, d))) #nonlinear case
+        residual = jnp.max(jnp.abs(vto(u, d, mu))) #linear case
+        #residual = jnp.max(jnp.abs(vto(u, d))) #nonlinear case
         print(residual)
 
         return u
@@ -705,6 +717,7 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
     vto = make_linear_vto(h, beta)
     jac_vto_fn = jacfwd(vto, argnums=0)
 
+    #adv = make_adv_no_source_no_adv(h, dt)
     adv = make_adv_no_source(h, dt)
     jac_adv_fn = jacfwd(adv, argnums=1)
 
@@ -715,12 +728,12 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
         #set reflection boundary condition
         dudx = dudx.at[0].set(2*u[0]/dx)
     
-        mu_nl = 1000*mu_faces_zero * (jnp.abs(dudx)+epsilon)**(-2/3)
+        mu_nl = mu_faces_zero * (jnp.abs(dudx)+epsilon)**(-2/3)
     
         return mu_nl, dudx
 
 
-    def new_source_term(d, mu_nl, dudx,gamma=1e4, A=1):
+    def new_source_term(d, mu_nl, dudx,gamma=1e5, A=1):
         #not sure whether it's best to interpolate these onto cell centres or whether it's best
         #to just define new ones on the cell centres...
 
@@ -729,11 +742,11 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
         stress_cc = 0.5 * (stress[1:] + stress[:-1])
         stress_cc = stress_cc.at[-2].set(stress_cc[-3])
 
-        #source = gamma * A * dx * ((stress_cc - h*d)**4) + epsilon
-        source = gamma * A * dx * ((stress_cc - 0*h*d)**4) + epsilon
+        source = gamma * A * dx * ((stress_cc - h*d)**4) + epsilon
+        #source = gamma * A * dx * ((stress_cc - 0*h*d)**4) + epsilon
         source = source.at[-1].set(0)
 
-        return jnp.zeros_like(source)
+        return source
     
     ###for debugging:
     ##jac_vto = jac_vto_fn(u_trial, d_trial, new_mu(u_trial))
@@ -751,7 +764,9 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
 
         u = u_init.copy()
         d = d_init.copy()
+        d_old = d.copy()
         mu, dudx = new_mu(u)
+        #mu = mu_faces_zero.copy()
 
         for i in range(iterations):
             #print(source)
@@ -762,13 +777,13 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
             #update mu and dudx
             mu, dudx = new_mu(u)
 
-            ##update source term
-            #source = new_source_term(d, mu, dudx)
+            #update source term
+            source = new_source_term(d, mu, dudx)
 
-            ##update d
-            #d = d.at[:-1].set(lalg.solve(jac_adv_fn(u, d, d.copy())[:-1, :-1], source[:-1]))
-            #d = jnp.minimum(d, 0.95)
-            #d = jnp.maximum(d, 0)
+            #update d
+            d = d.at[:-1].set(lalg.solve(jac_adv_fn(u, d, d_old)[:-1, :-1], source[:-1]))
+            d = jnp.minimum(d, 0.95)
+            d = jnp.maximum(d, 0)
 
     
             residual1 = jnp.max(jnp.abs(vto(u, d, mu)))
@@ -779,46 +794,6 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
                 break
 
         return u, d
-
-#    def condition(state):
-#        _,_,_, residual_combo, i = state
-#        return (residual_combo > 1e-8) & (i < iterations)
-#
-#
-#    def iterate(state):
-#        u, d, d_old, residual_combo, i = state
-#
-#        #update mu
-#        mu, dudx = new_mu(u)
-#
-#        #update u
-#        jac_vto = jac_vto_fn(u, d, mu)
-#        u = u + lalg.solve(jac_vto, -vto(u, d, mu))
-#
-#        #update damage source term
-#        source_term = new_source_term(d, mu, dudx)
-#        
-#        #update d
-#        jac_adv = jac_adv_fn(u, d, d_old)
-#        d = d.at[:-1].set(lalg.solve(jac_adv[:-1, :-1], source_term[:-1]))
-#        d = jnp.minimum(d, 0.95)
-#        d = jnp.maximum(d, 0)
-#        #print(format(lalg.solve(adv_vto[:-1, :-1], -adv(u, d, d.copy(), d_old)[:-1]))
-#
-#
-#        residual1 = jnp.max(jnp.abs(vto(u, d, mu)))
-#        residual2 = jnp.max(jnp.abs(adv(u, d, d_old)))
-#        residual_combo = residual1+residual2
-#
-#        return u, d, d_old, residual_combo, i+1
-#
-#
-#    def iterator(u_init, d_init):
-#
-#        u_end, d_end, d_old_end, res, itns = while_loop(condition, iterate, (u_init, d_init, d_init, 1, 0))
-#
-#        return u_end, d_end
-      
 
     return iterator
 
@@ -1025,12 +1000,13 @@ mu = jnp.zeros((n,)) + 1
 #OVERDEEPENED BED
 
 
-#h = 5*jnp.exp(-2*x*x*x*x) #grounded sections
-h = 1.75*jnp.exp(-2*x*x) #just a bit of an odd shaped ice shelf
+h = jnp.exp(-2*x*x*x) #grounded sections
+#h = 1.75*jnp.exp(-2*x*x) #just a bit of an odd shaped ice shelf
+#h = (1+jnp.zeros((n,)))*(1-x/2)
 h = h.at[-1].set(0)
 
 
-b_intermediate = jnp.zeros((n,))-2
+b_intermediate = jnp.zeros((n,))-0.5
 
 s_gnd = b_intermediate + h
 s_flt = h*(1-0.917/1.027)
@@ -1038,7 +1014,7 @@ s = jnp.maximum(s_gnd, s_flt)
 s = s.at[-1].set(0)
 
 
-b = jnp.zeros((n,))-2
+b = jnp.zeros((n,))-0.5
 
 h = jnp.minimum(s-b, s/(1-0.917/1.027))
 h = h.at[-1].set(0)
@@ -1062,7 +1038,8 @@ epsilon = 1e-6
 
 
 
-
+#plotgeom(h)
+#raise
 
 
 
@@ -1199,8 +1176,8 @@ epsilon = 1e-6
 #-----------------------#
 
 #u_trial = 0*(jnp.exp(x)-1)
-u_trial = 0.04*(x**2)
-
+#u_trial = 0.04*(x**2)
+u_trial = jnp.zeros((n,))
 d_trial = jnp.zeros((n,))
 d_test = jnp.zeros((n,))
 d_test = d_test.at[-80:-70].set(0)
@@ -1208,11 +1185,8 @@ d_test = d_test.at[-80:-70].set(0)
 #iterator = make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.01, 40)
 #iterator = jax.jit(make_picard_iterator_full_newton_for_d(jnp.ones_like(u_trial), h, beta, 0.005, 30))
 #iterator = jax.jit(make_picard_iterator_fully_linear(jnp.ones_like(u_trial), h, beta, 0.01, 50))
-iterator = make_picard_iterator_most_basic(u_trial, h, beta, 0.01, 100)
+iterator = make_picard_iterator_most_basic(jnp.ones_like(u_trial), h, beta, 0.03, 20)
 
-#NOTE: something very wrong with advection probably as we're waaaaaaaay below cfl limit and
-#it looks unstable. Test advection only.
-#advection seems to work! Maybe something wrong in vel solve...
 
 u_t = u_trial.copy()
 d_t = d_test.copy() #useful for testing advection
@@ -1220,7 +1194,7 @@ d_t = d_test.copy() #useful for testing advection
 
 us = [u_t]
 ds = [d_t]
-for i in range(1):
+for i in range(30):
     u_t, d_t = iterator(u_t, d_t)
     #print(u_t)
     #plotboth(d_t, u_t, title=None, savepath=None, axis_limits=None, show_plots=True)
@@ -1240,21 +1214,22 @@ raise
 ###################################
 ###PICARD SOLVE FOR U ONLY. Sort of works, convergence a bit shite. Not sure if something's up.
 
-#u_trial = 1*(jnp.exp(x)-1)
-u_trial = jnp.zeros((n,))
-
-d_test = jnp.zeros((n,))
-#d_test = d_test.at[-10:-8].set(0.9)
-
-iterator = make_picard_iterator(jnp.ones_like(u_trial), h, beta, d_test, 100)
-u_end = iterator(u_trial)
-
-#print(u_end)
-
-plt.plot(u_end)
-plt.show()
-
-raise
+##u_trial = 1*(jnp.exp(x)-1)
+#u_trial = jnp.zeros((n,))
+##u_trial = 0.04*(x**2)
+#
+#d_test = jnp.zeros((n,))
+##d_test = d_test.at[-10:-8].set(0.9)
+#
+#iterator = make_picard_iterator(jnp.ones_like(u_trial), h, beta, d_test, 100)
+#u_end = iterator(u_trial)
+#
+##print(u_end)
+#
+#plt.plot(u_end)
+#plt.show()
+#
+#raise
 
 
 
@@ -1262,29 +1237,29 @@ raise
 ###################################
 ##Just u using Newton's method. Doesn't reliably converge!!!
 
-d_test = jnp.zeros((n,))
-#d_test = d_test.at[80:81].set(0.75)
-
-#u_trial = 6*(jnp.exp(x)-1)
-u_trial = jnp.zeros((n,))
-
-u_solve = make_u_solver(u_trial, 30, d_test)
-
-u_end = u_solve()
-
-print(u_end)
-
-plt.plot(u_end)
-plt.show()
-
-
-raise
+#d_test = jnp.zeros((n,))
+##d_test = d_test.at[80:81].set(0.75)
+#
+##u_trial = 6*(jnp.exp(x)-1)
+#u_trial = jnp.zeros((n,))
+#
+#u_solve = make_u_solver(u_trial, 30, d_test)
+#
+#u_end = u_solve()
+#
+#print(u_end)
+#
+#plt.plot(u_end)
+#plt.show()
+#
+#
+#raise
 
 
 
 
 ###################################
-##Coupled, time-dependent problem, Newton:
+make_linear_vto##Coupled, time-dependent problem, Newton:
 
 dt = 0.01
 num_iterations = 30
