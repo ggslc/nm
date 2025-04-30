@@ -717,8 +717,8 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
     vto = make_linear_vto(h, beta)
     jac_vto_fn = jacfwd(vto, argnums=0)
 
-    #adv = make_adv_no_source_no_adv(h, dt)
-    adv = make_adv_no_source(h, dt)
+    adv = make_adv_no_source_no_adv(h, dt)
+    #adv = make_adv_no_source(h, dt)
     jac_adv_fn = jacfwd(adv, argnums=1)
 
     def new_mu(u):
@@ -788,7 +788,7 @@ def make_picard_iterator_most_basic(mu_centres_zero, h, beta, dt, iterations):
     
             residual1 = jnp.max(jnp.abs(vto(u, d, mu)))
 
-            print(residual1)
+            #print(residual1)
 
             if residual1 < 1e-8:
                 break
@@ -1169,45 +1169,82 @@ epsilon = 1e-6
 #raise
 
 
+################################
+
+###PICARD JOINT PROBLEM WITH NEWTON FOR D AT EACH PICARD ITERATION:
+#-----------------------#
+
+u_trial = jnp.zeros((n,))
+d_trial = jnp.zeros((n,))
+d_test = jnp.zeros((n,))
+d_test = d_test.at[-80:-70].set(0)
+
+
+timestep_lengths = [0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1]
+
+for timestep_length in timestep_lengths:
+    iterator = make_picard_iterator_most_basic(jnp.ones_like(u_trial), h, beta, timestep_length, 20)
+
+    u_t = u_trial.copy()
+    d_t = d_test.copy() #useful for testing advection
+    #d_t = d_trial.copy()
+    
+    us = [u_t]
+    ds = [d_t]
+    for i in range(30):
+        u_t, d_t = iterator(u_t, d_t)
+        #print(u_t)
+        #plotboth(d_t, u_t, title=None, savepath=None, axis_limits=None, show_plots=True)
+        
+        if i%1==0:
+            print(i)
+            us.append(u_t)
+            ds.append(d_t)
+    
+    plotboths(ds, us, 30, title=None, savepath="./plots/no_adv_ts_"+str(timestep_length)+".png", axis_limits=None, show_plots=True)
+    
+raise
+
+
 
 ################################
 
 ###PICARD JOINT PROBLEM WITH NEWTON FOR D AT EACH PICARD ITERATION:
 #-----------------------#
 
-#u_trial = 0*(jnp.exp(x)-1)
-#u_trial = 0.04*(x**2)
-u_trial = jnp.zeros((n,))
-d_trial = jnp.zeros((n,))
-d_test = jnp.zeros((n,))
-d_test = d_test.at[-80:-70].set(0)
-
-#iterator = make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.01, 40)
-#iterator = jax.jit(make_picard_iterator_full_newton_for_d(jnp.ones_like(u_trial), h, beta, 0.005, 30))
-#iterator = jax.jit(make_picard_iterator_fully_linear(jnp.ones_like(u_trial), h, beta, 0.01, 50))
-iterator = make_picard_iterator_most_basic(jnp.ones_like(u_trial), h, beta, 0.03, 20)
-
-
-u_t = u_trial.copy()
-d_t = d_test.copy() #useful for testing advection
-#d_t = d_trial.copy()
-
-us = [u_t]
-ds = [d_t]
-for i in range(30):
-    u_t, d_t = iterator(u_t, d_t)
-    #print(u_t)
-    #plotboth(d_t, u_t, title=None, savepath=None, axis_limits=None, show_plots=True)
-    
-    if i%1==0:
-        print(i)
-        us.append(u_t)
-        ds.append(d_t)
-
-plotboths(ds, us, 20, title=None, savepath=None, axis_limits=None, show_plots=True)
-
-
-raise
+##u_trial = 0*(jnp.exp(x)-1)
+##u_trial = 0.04*(x**2)
+#u_trial = jnp.zeros((n,))
+#d_trial = jnp.zeros((n,))
+#d_test = jnp.zeros((n,))
+#d_test = d_test.at[-80:-70].set(0)
+#
+##iterator = make_picard_iterator_full(jnp.ones_like(u_trial), h, beta, 0.01, 40)
+##iterator = jax.jit(make_picard_iterator_full_newton_for_d(jnp.ones_like(u_trial), h, beta, 0.005, 30))
+##iterator = jax.jit(make_picard_iterator_fully_linear(jnp.ones_like(u_trial), h, beta, 0.01, 50))
+#iterator = make_picard_iterator_most_basic(jnp.ones_like(u_trial), h, beta, 0.03, 20)
+#
+#
+#u_t = u_trial.copy()
+#d_t = d_test.copy() #useful for testing advection
+##d_t = d_trial.copy()
+#
+#us = [u_t]
+#ds = [d_t]
+#for i in range(30):
+#    u_t, d_t = iterator(u_t, d_t)
+#    #print(u_t)
+#    #plotboth(d_t, u_t, title=None, savepath=None, axis_limits=None, show_plots=True)
+#    
+#    if i%1==0:
+#        print(i)
+#        us.append(u_t)
+#        ds.append(d_t)
+#
+#plotboths(ds, us, 20, title=None, savepath=None, axis_limits=None, show_plots=True)
+#
+#
+#raise
 
 
 
