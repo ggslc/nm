@@ -1254,7 +1254,7 @@ epsilon = 1e-6
 
 ################################
 
-###PICARD JOINT PROBLEM WITH NEWTON FOR D AT EACH PICARD ITERATION:
+###SIMPLIFIED PICARD JOINT PROBLEM:
 #-----------------------#
 
 u_trial = jnp.zeros((n,))
