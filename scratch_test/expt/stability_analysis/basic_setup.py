@@ -491,7 +491,7 @@ mu = jnp.zeros((n,)) + 1
 
 #OVERDEEPENED BED
 
-h = jnp.exp(-2*x*x*x) #grounded sections
+h = 1.2*jnp.exp(-2*x*x*x) #grounded sections
 #h = jnp.ones_like(x)*0.5 #floating uniform thk
 
 #h = 1.75*jnp.exp(-2*x*x) #just a bit of an odd shaped ice shelf
@@ -508,6 +508,7 @@ s = s.at[-1].set(0)
 
 
 b = jnp.zeros((n,))-0.5
+b = b.at[:n].set(b[:n] - 0.15*jnp.exp(-(5*x-2)**2))
 
 h = jnp.minimum(s-b, s/(1-0.917/1.027))
 h = h.at[-1].set(0)
@@ -533,7 +534,7 @@ epsilon = 1e-5
 
 
 
-accumulation = jnp.zeros_like(h)
+accumulation = jnp.zeros_like(h)+0.01
 
 #plotgeom(h)
 #raise
@@ -544,7 +545,7 @@ accumulation = jnp.zeros_like(h)
 u_trial = jnp.zeros_like(x)
 h_trial = h.copy()
 
-n_timesteps = 5
+n_timesteps = 20
 newton_solve = implicit_coupled_solver(u_trial, h_trial, accumulation, 1, 20, n_timesteps)
 u_end, h_end, hs, us = newton_solve(mu)
 plotboths(hs[:], us[:], n_timesteps) 
