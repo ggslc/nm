@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
 
-#np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
+np.set_printoptions(precision=1, suppress=False, linewidth=np.inf)
 
 def make_vto_nl(beta, mu_cc):
     #NOTE: taken out the nonlinearity
@@ -228,40 +228,8 @@ def make_adv_operator(dt, accumulation):
         h_flux = h_face * u_face
         #the two lines below were supposed to stop everything piling up in the last
         #cell but they had the opposite effect for some reason...
-        #h_flux = h_flux.at[-2].set(h_flux[-3]) #stop everythin piling up at the end.
-        #h_flux = h_flux.at[-1].set(h_flux[-2])
-        h_flux = h_flux.at[0].set(0)
-
-
-        #return  (h - h_old)/dt - ( h_flux[1:(n+1)] - h_flux[:n] )/dx - acc
-        #I think the above is a sign error in the flux!
-        return  (h - h_old)/dt + ( h_flux[1:(n+1)] - h_flux[:n] )/dx - acc
-
-    return adv_op    
-
-def make_adv_operator_acc_dependent_on_old_h(dt, accumulation):
-    
-    def adv_op(u, h, h_old, basal_melt_rate):
-        s_gnd = h_old + b
-        s_flt = h_old*(1-0.917/1.027)
-
-        acc = jnp.where(s_gnd<s_flt, accumulation-basal_melt_rate, accumulation)
-        acc = acc.at[-1].set(0)
-        acc = acc.at[:].set(jnp.where(h>0, acc, 0))
-
-        h_face = jnp.zeros((n+1,))
-        h_face = h_face.at[1:n].set(h[:n-1]) #upwind values
-        h_face = h_face.at[0].set(h[0])
-
-        u_face = jnp.zeros((n+1,))
-        u_face = u_face.at[1:n-1].set(0.5*(u[1:n-1]+u[:n-2]))
-        u_face = u_face.at[-2].set(u[-2])
-
-        h_flux = h_face * u_face
-        #the two lines below were supposed to stop everything piling up in the last
-        #cell but they had the opposite effect for some reason...
-        #h_flux = h_flux.at[-2].set(h_flux[-3]) #stop everythin piling up at the end.
-        #h_flux = h_flux.at[-1].set(h_flux[-2])
+        h_flux = h_flux.at[-2].set(h_flux[-3]) #stop everythin piling up at the end.
+        h_flux = h_flux.at[-1].set(h_flux[-2])
         h_flux = h_flux.at[0].set(0)
 
 
@@ -320,7 +288,6 @@ def implicit_coupled_solver_compiled(mu, beta, \
 
     vto = make_vto_nl(beta, mu)
     adv = make_adv_operator(dt, accumulation)
-    #adv = make_adv_operator_acc_dependent_on_old_h(dt, accumulation)
 
     visc_jac_fn = jacfwd(vto, argnums=(0,1))
     adv_jac_fn = jacfwd(adv, argnums=(0,1))
@@ -364,7 +331,7 @@ def implicit_coupled_solver_compiled(mu, beta, \
     def timestep(state):
         u, h, bmr, us, hs, bmrs, t = state
 
-        #jax.debug.print("t = {}", t)
+        jax.debug.print("t = {}", t)
 
         bmr_new = bmr.copy() #could make this some time-dependent function y'see.
 
@@ -372,6 +339,9 @@ def implicit_coupled_solver_compiled(mu, beta, \
 
         initial_state = (u, h, 0)
         u_new, h_new, i = jax.lax.while_loop(newton_condition, newton_iterate, initial_state)
+
+        residual = (jnp.max(vto(u_new, h_new)), jnp.max(adv(u_new, h_new, h, bmr)))
+        jax.debug.print("residual = {}", residual)
 
         us = us.at[t].set(u_new)
         hs = hs.at[t].set(h_new)
@@ -406,8 +376,8 @@ def implicit_coupled_solver_compiled(mu, beta, \
                                              visc_jac[1][:,:n-1],\
                                              visc_jac[0])
 
-            evals, evecs = jnp.linalg.eig(L)
-            #evecs, evals, _ = jnp.linalg.svd(L) #I know they're not eigen-...!
+            #evals, evecs = jnp.linalg.eig(L)
+            evecs, evals, _ = jnp.linalg.svd(L) #I know they're not eigen-...!
             
             #evecs_ptl, evals_ptl, _ = jnp.linalg.svd(H_jac[1][:n-1, :n-1])
 
@@ -735,8 +705,7 @@ h = 1.2*jnp.exp(-2*x*x*x) #grounded sections
 h = h.at[-1].set(0)
 
 
-#b_intermediate = jnp.zeros((n,))-0.5
-b_intermediate = -0.3 - 0.3*x.copy()
+b_intermediate = jnp.zeros((n,))-0.5
 
 s_gnd = b_intermediate + h
 s_flt = h*(1-0.917/1.027)
@@ -744,12 +713,13 @@ s = jnp.maximum(s_gnd, s_flt)
 s = s.at[-1].set(0)
 
 
-#b = jnp.zeros((n,))-0.5
-#b = b.at[:n].set(b[:n] - 0.15*jnp.exp(-(5*x-2)**2))
-
-b = -0.3 - 0.3*x.copy()
+#nice overdeepening on a flat bed:
+b = jnp.zeros((n,))-0.5
 b = b.at[:n].set(b[:n] - 0.15*jnp.exp(-(5*x-2)**2))
 
+##not so flat bed:
+#b = -0.1 - 0.4*x
+#b = b.at[:n].set(b[:n] - 0.25*jnp.exp(-(5*x-2)**2))
 
 h = jnp.minimum(s-b, s/(1-0.917/1.027))
 h = h.at[-1].set(0)
@@ -775,8 +745,8 @@ epsilon = 1e-5
 
 
 
-accumulation = jnp.zeros_like(h)+0.05
-#accumulation = jnp.zeros_like(h)
+#accumulation = jnp.zeros_like(h)+0.05
+accumulation = jnp.zeros_like(h)
 
 #plotgeom(h)
 #raise
@@ -796,48 +766,33 @@ h_trial = h.copy()
 
 ###########TRYING TO GET THE JIT COMPILATION GOING:
 
-n_timesteps = 20
-n_iterations = 10
-timestep = 1
+n_timesteps = 5
+n_iterations = 30
+timestep = 0.02
 
-#bmr_init = jnp.zeros_like(accumulation)+0.005
-#
-#accumulation = accumulation/timestep
-#bmr_init = bmr_init/timestep
-#
-#solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
-#u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init)
-#
-#print(evals)
-#
-#plotboths(hs[:, :], us[:, :], n_timesteps)
-#
-#raise
+bmr_init = jnp.zeros_like(accumulation)#+0.085
+
+solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation, timestep, n_iterations, n_timesteps, compute_eigenvalues=False)
+u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init)
+
+print(evals)
+
+plotboths(hs[:, :], us[:, :], n_timesteps)
+
+raise
 
 #Plotting evolution of largest eigenvalues for steady-state solutions:
 largest_evals = []
-smallest_evals = []
-for k, bmr_init in enumerate([jnp.zeros_like(accumulation)+0.005+0.001*i for i in range(200)]):
-    print(k)
+for bmr_init in [jnp.zeros_like(accumulation)+0.05*i for i in range(10)]:
 
-    accumulation_scaled = accumulation/timestep
-    bmr_init_scaled = bmr_init/timestep
+    solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
+    u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init)
 
-    solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation_scaled, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
-    u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init_scaled)
-    
-    u_trial = u_end.copy()
-    h_trial = h_end.copy()
+    largest_evals.append(evals[-1])
 
-    largest_evals.append(evals[-2])
-    smallest_evals.append(evals[0])
-
-    #plotboths(hs[::10, :], us[::10, :], n_timesteps)
-
+    plotboths(hs[::10, :], us[::10, :], n_timesteps)
 
 plt.plot(largest_evals)
-plt.show()
-plt.plot(smallest_evals)
 plt.show()
 
 
@@ -848,8 +803,8 @@ raise
 #######WORKING STUFF LOOKING AT EIGENVALUES, NO JIT COMPILATION SO IT'S SLOW:
 
 
-n_timesteps = 20
-newton_solve = implicit_coupled_solver(u_trial, h_trial, accumulation, 1, 20, n_timesteps, compute_evals=True)
+n_timesteps = 5
+newton_solve = implicit_coupled_solver(u_trial, h_trial, accumulation, 1, 50, n_timesteps, compute_evals=True)
 u_end, h_end, hs, us, evals, all_evals, evals_ptl, all_evals_ptl = newton_solve(mu)
 
 
@@ -859,15 +814,15 @@ u_end, h_end, hs, us, evals, all_evals, evals_ptl, all_evals_ptl = newton_solve(
 #plt.imshow(jnp.transpose(all_evals_ptl), vmin=-10, vmax=10, cmap="RdBu_r")
 #plt.show()
 
-plt.imshow(jnp.transpose(all_evals)-jnp.transpose(all_evals_ptl), vmin=-3, vmax=3, cmap="RdBu_r")
-plt.colorbar()
-plt.show()
+#plt.imshow(jnp.transpose(all_evals)-jnp.transpose(all_evals_ptl), vmin=-3, vmax=3, cmap="RdBu_r")
+#plt.colorbar()
+#plt.show()
 
 #plt.plot(evals)
 #plt.show()
 
 
-#plotboths(hs[:], us[:], n_timesteps) 
+plotboths(hs[:], us[:], n_timesteps) 
 
 
 ##NEWTON
