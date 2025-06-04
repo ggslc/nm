@@ -11,7 +11,7 @@ import matplotlib.cm as cm
 
 #np.set_printoptions(precision=3, suppress=False, linewidth=np.inf)
 
-def make_vto_nl(beta, mu_cc):
+def make_nonlinear_momentum_residual(beta, mu_cc):
     #NOTE: taken out the nonlinearity
 
     mu_face = jnp.zeros((n+1,))
@@ -20,7 +20,7 @@ def make_vto_nl(beta, mu_cc):
     mu_face = mu_face.at[0].set(mu_cc[1])
 
     
-    def vto(u, h):
+    def mom_res(u, h):
         s_gnd = h + b
         s_flt = h*(1-0.917/1.027)
         s = jnp.maximum(s_gnd, s_flt)
@@ -67,12 +67,11 @@ def make_vto_nl(beta, mu_cc):
         
         return flux[1:] - flux[:-1] - h_grad_s - sliding
 
-    return vto
+    return mom_res
 
+def make_linear_momentum_residual(beta):
 
-def make_linear_vto(beta):
-    
-    def vto(u, h, mu_face):
+    def mom_res(u, h, mu_face):
         s_gnd = h + b
         s_flt = h*(1-0.917/1.027)
         s = jnp.maximum(s_gnd, s_flt)
@@ -81,7 +80,7 @@ def make_linear_vto(beta):
         dudx = jnp.zeros((n+1,))
         dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
         #dudx = dudx.at[-2].set(dudx[-3])
-        dudx = dudx.at[-2].set(0)
+        dudx = dudx.at[-1].set(0)
         ##set (or 'use' I guess) reflection boundary condition
         dudx = dudx.at[0].set(2*u[0]/dx)
        
@@ -92,8 +91,8 @@ def make_linear_vto(beta):
 
         
         h_face = jnp.zeros((n+1,))
-        h_face = h_face.at[1:n-1].set(0.5 * (h[1:n-1] + h[:n-2]))
-        h_face = h_face.at[-2].set(0)
+        h_face = h_face.at[1:n].set(0.5 * (h[1:n] + h[:n-1]))
+        h_face = h_face.at[-1].set(0)
         h_face = h_face.at[0].set(h[0])
 
 
@@ -102,19 +101,19 @@ def make_linear_vto(beta):
 
         h_grad_s = jnp.zeros((n,))
         h_grad_s = h_grad_s.at[1:n-1].set(h[1:n-1] * 0.5 * (s[2:n] - s[:n-2]))
-        #h_grad_s = h_grad_s.at[-2].set(-1)
+        h_grad_s = h_grad_s.at[-1].set(-h[-1] * 0.5 * s[-2])
+        #h_grad_s = h_grad_s.at[-2].set(-0.1)
         h_grad_s = h_grad_s.at[0].set(h[0] * 0.5 * (s[1] - s[0]))
       
-
         return flux[1:] - flux[:-1] - h_grad_s - sliding
 
-    return vto
+    return mom_res
 
 
 def make_picard_iterator_for_u(mu_centres_zero, h, beta, iterations):
 
     mu_faces_zero = jnp.zeros((n+1,))
-    mu_faces_zero = mu_faces_zero.at[1:-2].set(0.5 * (mu_centres_zero[:-2] + mu_centres_zero[1:-1]))
+    mu_faces_zero = mu_faces_zero.at[1:n].set(0.5 * (mu_centres_zero[:n-1] + mu_centres_zero[1:n]))
     mu_faces_zero = mu_faces_zero.at[0].set(mu_centres_zero[1])
    
     def new_mu(u):
@@ -124,18 +123,18 @@ def make_picard_iterator_for_u(mu_centres_zero, h, beta, iterations):
         #set reflection boundary condition
         dudx = dudx.at[0].set(2*u[0]/dx)
     
-        mu_nl = mu_faces_zero * (jnp.abs(dudx)+epsilon)**(-2/3)
+        mu_nl = 5e-2 * mu_faces_zero * (jnp.abs(dudx)+epsilon)**(-2/3)
     
         return mu_nl
     
 
     def iterator(u_init):    
 
-        vto = make_linear_vto(beta)
+        mom_res = make_linear_momentum_residual(beta)
 
-        vto_nl = make_vto_nl(beta, mu_centres_zero)
+        mom_res_nl = make_nonlinear_momentum_residual(beta, mu_centres_zero)
         
-        jac_vto_fn = jacfwd(vto, argnums=0)
+        jac_mom_res_fn = jacfwd(mom_res, argnums=0)
 
 
         mu = mu_faces_zero.copy()
@@ -147,14 +146,15 @@ def make_picard_iterator_for_u(mu_centres_zero, h, beta, iterations):
 
         for i in range(iterations):
             
-            residual = jnp.max(jnp.abs(vto(u, h, mu))) 
+            #residual = jnp.max(jnp.abs(mom_res_nl(u, h, mu))) 
+            residual = jnp.max(jnp.abs(mom_res_nl(u, h)))
             print(residual)
 
             mu = new_mu(u) 
             
-            jac_vto = jac_vto_fn(u, h, mu) 
+            jac_mom_res = jac_mom_res_fn(u, h, mu) 
 
-            u = u + lalg.solve(jac_vto, -vto(u, h, mu)) 
+            u = u + lalg.solve(jac_mom_res, -mom_res(u, h, mu)) 
 
             us.append(u)
             
@@ -163,8 +163,8 @@ def make_picard_iterator_for_u(mu_centres_zero, h, beta, iterations):
 
             prev_residual = residual
 
-        residual = jnp.max(jnp.abs(vto(u, h, mu)))
-        print(residual)
+        #residual = jnp.max(jnp.abs(mom_res(u, h, mu)))
+        #print(residual)
 
         return u, us
        
@@ -320,11 +320,11 @@ def implicit_coupled_solver_compiled(mu, beta, \
                             compute_eigenvalues=False):
 
 
-    vto = make_vto_nl(beta, mu)
+    mom_res = make_nonlinear_momentum_residual(beta, mu)
     adv = make_adv_operator(dt, accumulation)
     #adv = make_adv_operator_acc_dependent_on_old_h(dt, accumulation)
 
-    visc_jac_fn = jacfwd(vto, argnums=(0,1))
+    visc_jac_fn = jacfwd(mom_res, argnums=(0,1))
     adv_jac_fn = jacfwd(adv, argnums=(0,1))
 
 
@@ -350,14 +350,14 @@ def implicit_coupled_solver_compiled(mu, beta, \
                                         [adv_jac[0] , adv_jac[1]] ]
                                       )
     
-            rhs = jnp.concatenate((-vto(u, h), -adv(u, h, h_old, bmr)))
+            rhs = jnp.concatenate((-mom_res(u, h), -adv(u, h, h_old, bmr)))
     
             dvar = lalg.solve(full_jacobian, rhs)
     
             u = u.at[:].set(u+dvar[:n])
             h = h.at[:].set(h+dvar[n:])
     
-            #print(jnp.max(jnp.abs(vto(u, h))), jnp.max(jnp.abs(adv(u, h, h_old, basal_melt_rate))))
+            #print(jnp.max(jnp.abs(mom_res(u, h))), jnp.max(jnp.abs(adv(u, h, h_old, basal_melt_rate))))
     
             return u, h, i+1
         return newton_iterate
@@ -437,11 +437,11 @@ def implicit_coupled_solver(u_trial, h_trial,\
 
     def newton_solve(mu):
 
-        vto = make_vto_nl(beta, mu)
+        mom_res = make_nonlinear_momentum_residual(beta, mu)
         adv = make_adv_operator(dt, accumulation)
         #adv = make_adv_operator_acc_dependent_on_old_h(dt, accumulation)
 
-        vto_jac_fn = jacfwd(vto, argnums=(0,1))
+        mom_res_jac_fn = jacfwd(mom_res, argnums=(0,1))
         adv_jac_fn = jacfwd(adv, argnums=(0,1))
 
         u = u_trial.copy()
@@ -461,16 +461,16 @@ def implicit_coupled_solver(u_trial, h_trial,\
 
             print(j)
             for i in range(num_iterations):
-                vto_jac = vto_jac_fn(u, h)
+                mom_res_jac = mom_res_jac_fn(u, h)
                 adv_jac = adv_jac_fn(u, h, h_old, basal_melt_rate)
         
 
                 full_jacobian = jnp.block(
-                                          [[vto_jac[0], vto_jac[1]],
+                                          [[mom_res_jac[0], mom_res_jac[1]],
                                           [adv_jac[0], adv_jac[1]]]
                                           )
 
-#                print(np.array(vto_jac[0]))
+#                print(np.array(mom_res_jac[0]))
 #                print("-------------------")
 #                print("-------------------")
 #                print("-------------------")
@@ -478,7 +478,7 @@ def implicit_coupled_solver(u_trial, h_trial,\
 #                print("-------------------")
 #                print("-------------------")
 #                print("-------------------")
-#                print(np.array(vto_jac[1]))
+#                print(np.array(mom_res_jac[1]))
 #                print("-------------------")
 #                print("-------------------")
 #                print("-------------------")
@@ -490,7 +490,7 @@ def implicit_coupled_solver(u_trial, h_trial,\
 #                raise
 
 
-                rhs = jnp.concatenate((-vto(u, h), -adv(u, h, h_old, basal_melt_rate)))
+                rhs = jnp.concatenate((-mom_res(u, h), -adv(u, h, h_old, basal_melt_rate)))
 
                 dvar = lalg.solve(full_jacobian, rhs)
 
@@ -498,7 +498,7 @@ def implicit_coupled_solver(u_trial, h_trial,\
                 u = u.at[:].set(u+dvar[:n])
                 h = h.at[:].set(h+dvar[n:])
 
-                print(jnp.max(jnp.abs(vto(u, h))), jnp.max(jnp.abs(adv(u, h, h_old, basal_melt_rate))))
+                print(jnp.max(jnp.abs(mom_res(u, h))), jnp.max(jnp.abs(adv(u, h, h_old, basal_melt_rate))))
 
 
             plotboth(h, u)
@@ -509,8 +509,8 @@ def implicit_coupled_solver(u_trial, h_trial,\
 
                 L, fdbk, dHdh = construct_tangent_propagator(H_jac[1],\
                                                              H_jac[0],\
-                                                             vto_jac[1],\
-                                                             vto_jac[0])
+                                                             mom_res_jac[1],\
+                                                             mom_res_jac[0])
 
                 max_speed = jnp.max(u)
 
@@ -587,45 +587,46 @@ def implicit_coupled_solver(u_trial, h_trial,\
     return newton_solve
 
 
-def make_u_solver(h, beta, num_iterations):
+def make_u_solver(mu, h, beta, num_iterations):
 
-    def newton_solve(u_trial, mu):
+    def newton_solve(u_trial):
 
-        vto = make_vto_nl(beta, mu)
-        #vto = make_vto_nl_dfct(beta, mu)
-        vto_jac_fn = jacfwd(vto, argnums=0)
+        mom_res = make_nonlinear_momentum_residual(beta, mu)
+        #mom_res = make_nonlinear_momentum_residual_dfct(beta, mu)
+        mom_res_jac_fn = jacfwd(mom_res, argnums=0)
 
         u = u_trial.copy()
 
         us = []
         
         ##For debugging:
-        #vto(u, h)
+        #mom_res(u, h)
         #raise
 
         for i in range(num_iterations):
-            vto_jac = vto_jac_fn(u, h)
-        #    print(vto_jac)
-            rhs = -vto(u, h)
+            mom_res_jac = mom_res_jac_fn(u, h)
+        #    print(mom_res_jac)
+            rhs = -mom_res(u, h)
         #    print(rhs)
             #raise
 
-            du = lalg.solve(vto_jac, rhs)
+            du = lalg.solve(mom_res_jac, rhs)
 
-            #print(vto_jac @ du - rhs)
+            #print(mom_res_jac @ du - rhs)
 
-            u = u.at[:].set(u+du)
+            #u = u.at[:].set(u+du)
+            u = u+du
             
-            print(jnp.max(jnp.abs(vto(u, h))))
+            print(jnp.max(jnp.abs(mom_res(u, h))))
 
 
-        plotboth(h, u)
+        #plotboth(h, u)
 
         us.append(u)
 
-        final_vto_jac = vto_jac_fn(u, h)
+        final_mom_res_jac = mom_res_jac_fn(u, h)
 
-        return u, us, final_vto_jac
+        return u, us
 
     return newton_solve
 
@@ -839,8 +840,22 @@ h_trial = h.copy()
 
 
 
+##TESTING PICARD ITERATION:
+iterator = make_picard_iterator_for_u(mu, h_trial, beta, 10)
+u_end, us = iterator(u_trial)
+print("change to newton")
+iterator = make_u_solver(mu, h_trial, beta, 5)
+u_end, us = iterator(u_end)
 
+plotboth(h, u_end)
 
+plt.figure(figsize=(10,5))
+for i, u_ in enumerate(us):
+    plt.plot(u_, label=str(i))
+plt.legend()
+plt.show()
+
+raise
 
 
 
@@ -988,10 +1003,10 @@ plotboths(hs[:], us[:], n_timesteps)
 
 ##NEWTON
 #newton_solve = make_u_solver(h, beta, 20)
-#u_end, us, vto_jac = newton_solve(u_trial, mu)
+#u_end, us, mom_res_jac = newton_solve(u_trial, mu)
 
 
-#evals, evecs = jnp.linalg.eig(vto_jac)
+#evals, evecs = jnp.linalg.eig(mom_res_jac)
 
 #indices = jnp.argsort(evals)
 #evals_ordered = evals[indices]
