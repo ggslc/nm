@@ -408,20 +408,41 @@ def implicit_coupled_solver_compiled(mu, beta, \
                                              visc_jac[1],\
                                              visc_jac[0])
 
-            evals, evecs = jnp.linalg.eig(fdbk)
+
+
+            s_gnd = h + b
+            s_flt = h*(1-0.917/1.027)
+
+
+            mask = jnp.where(s_gnd>s_flt, 1, 0)
+            mask = jnp.outer(mask, mask)
+
+            L_cr = L * mask
+
+            #ffi = np.where(s_gnd<s_flt)[0][0]
+            #L_cr = L[:ffi, :ffi]
+
+            
+            evals, evecs = jnp.linalg.eig(L_cr)
+            order_indices = jnp.argsort(evals)
+            evals_ord = evals[order_indices]
+            evecs_ord = evecs[:, order_indices]
+
+            
+            #evals, evecs = jnp.linalg.eig(fdbk)
             #evecs, evals, _ = jnp.linalg.svd(L) #I know they're not eigen-...!
             
             #evecs_ptl, evals_ptl, _ = jnp.linalg.svd(H_jac[1][:n-1, :n-1])
 
-            indices = jnp.argsort(evals)
-            evals_ordered = evals[indices]
-            evecs_ordered = evecs[:,indices]
+            #indices = jnp.argsort(evals)
+            #evals_ordered = evals[indices]
+            #evecs_ordered = evecs[:,indices]
 
             #indices_ptl = jnp.argsort(evals_ptl)
             #evals_ordered_ptl = evals[indices_ptl]
             #evecs_ordered_ptl = evecs[:,indices_ptl]
 
-            return u, h, us, hs, bmrs, evals_ordered, evecs_ordered
+            return u, h, us, hs, bmrs, evals_ord, evecs_ord, mask
         else:
             return u, h, us, hs, bmrs
 
@@ -433,7 +454,8 @@ def implicit_coupled_solver(u_trial, h_trial,\
                             accumulation, dt, \
                             basal_melt_rate, \
                             num_iterations, num_timesteps, \
-                            compute_evals=False):
+                            compute_evals=False, \
+                            compute_evals_at_ss=False):
 
     def newton_solve(mu):
 
@@ -464,7 +486,6 @@ def implicit_coupled_solver(u_trial, h_trial,\
                 mom_res_jac = mom_res_jac_fn(u, h)
                 adv_jac = adv_jac_fn(u, h, h_old, basal_melt_rate)
         
-
                 full_jacobian = jnp.block(
                                           [[mom_res_jac[0], mom_res_jac[1]],
                                           [adv_jac[0], adv_jac[1]]]
@@ -501,7 +522,7 @@ def implicit_coupled_solver(u_trial, h_trial,\
                 print(jnp.max(jnp.abs(mom_res(u, h))), jnp.max(jnp.abs(adv(u, h, h_old, basal_melt_rate))))
 
 
-            plotboth(h, u)
+            #plotboth(h, u)
             
             if compute_evals:
                 H = make_adv_rhs(accumulation)
@@ -512,20 +533,50 @@ def implicit_coupled_solver(u_trial, h_trial,\
                                                              mom_res_jac[1],\
                                                              mom_res_jac[0])
 
-                max_speed = jnp.max(u)
+                
 
-                evecs, evals, Vh = jnp.linalg.svd(L)#/max_speed) #I know they're not eigen-...!
-                evecs_ptl, evals_ptl, Vh_ptl = jnp.linalg.svd(H_jac[1])#/max_speed)
-                evecs_fdbk, evals_fdbk, Vh_fdbk = jnp.linalg.svd(fdbk)#/max_speed)
+                s_gnd = h + b
+                s_flt = h*(1-0.917/1.027)
 
-                #evals, evecs = jnp.linalg.eig(L) #I know they're not eigen-...!
-                #evals_ptl, evecs_ptl = jnp.linalg.eig(H_jac[1])
+                ffi = np.where(s_gnd<s_flt)[0][0]
+
+
+                L_cr = L[:ffi, :ffi]
+
+
+
+                #eigenvalues
+                evals, evecs = jnp.linalg.eig(L_cr)
+                order_indices = jnp.argsort(evals)
+                evals_ord = evals[order_indices]
+                evecs_ord = evecs[:, order_indices]
+
+
+                #print(evals_ord[-1])
+                #plt.imshow(jnp.rot90(jnp.real(evecs_ord)))
+                #plt.show()
+                #raise
+
+
+
+
+                #max_speed = jnp.max(u)
+
+                #evecs, evals, Vh = jnp.linalg.svd(L_cr)#/max_speed) #I know they're not eigen-...!
+                #evecs_ptl, evals_ptl, Vh_ptl = jnp.linalg.svd(H_jac[1])#/max_speed)
+                #evecs_fdbk, evals_fdbk, Vh_fdbk = jnp.linalg.svd(fdbk)#/max_speed)
+
+                ##evals, evecs = jnp.linalg.eig(L) #I know they're not eigen-...!
+                ##evals_ptl, evecs_ptl = jnp.linalg.eig(H_jac[1])
 
            
-                indices = jnp.argsort(evals)
-                evals_ordered = evals[indices]
-                evecs_ordered = Vh.T[:,indices]
+                #plotboth(h,u)
 
+
+                #indices = jnp.argsort(evals)
+                #evals_ordered = evals[indices]
+                #right_evecs_ordered = Vh.T[:,indices]
+                #left_evecs_ordered = evecs[:,indices]
                 
                 #print(evals_ordered[0])
                 #plt.plot(evecs_ordered[0])
@@ -537,41 +588,45 @@ def implicit_coupled_solver(u_trial, h_trial,\
                 #raise
 
                 
-                plt.imshow(jnp.rot90(evecs_ordered), vmin=-0.5, vmax=0.5, cmap="RdBu_r")
-                plt.show()
-                #raise
-
-
-                indices_ptl = jnp.argsort(evals_ptl)
-                evals_ordered_ptl = evals_ptl[indices_ptl]
-                evecs_ordered_ptl = evecs_ptl[:,indices_ptl]
-
-
-                indices_fdbk = jnp.argsort(evals_fdbk)
-                evals_ordered_fdbk = evals_fdbk[indices_fdbk]
-                evecs_ordered_fdbk = evecs_fdbk[:,indices_fdbk]
-                
-                plt.imshow(jnp.transpose(evecs_ordered_fdbk), vmin=-0.5, vmax=0.5, cmap="RdBu_r")
-                plt.show()
-                #raise
-
-                #plt.imshow(jnp.real(evecs_ordered), vmin=-0.2, vmax=0.2)
+                #plt.imshow(jnp.rot90(right_evecs_ordered), vmin=-0.5, vmax=0.5, cmap="RdBu_r")
+                #plt.show()
+                #
+                #plt.imshow(jnp.rot90(left_evecs_ordered), vmin=-0.5, vmax=0.5, cmap="RdBu_r")
                 #plt.show()
 
+                ##raise
 
-                #NOTE: I'm actually looking at the smallest eigenvalues now!
 
-                all_evals.append(evals)
-                largest_evals.append(evals_ordered[-1]) #largest
-                #largest_evals.append(evals_ordered[0]) #smallest
-                
-                all_evals_ptl.append(evals_ptl)
-                largest_evals_ptl.append(evals_ordered_ptl[-1])
-                #largest_evals_ptl.append(evals_ordered_ptl[0])
+                #indices_ptl = jnp.argsort(evals_ptl)
+                #evals_ordered_ptl = evals_ptl[indices_ptl]
+                #evecs_ordered_ptl = evecs_ptl[:,indices_ptl]
 
-                all_evals_fdbk.append(evals_fdbk)
-                largest_evals_fdbk.append(evals_ordered_fdbk[-1])
-                #largest_evals_ptl.append(evals_ordered_ptl[0])
+
+                #indices_fdbk = jnp.argsort(evals_fdbk)
+                #evals_ordered_fdbk = evals_fdbk[indices_fdbk]
+                #evecs_ordered_fdbk = evecs_fdbk[:,indices_fdbk]
+                #
+                #plt.imshow(jnp.transpose(evecs_ordered_fdbk), vmin=-0.5, vmax=0.5, cmap="RdBu_r")
+                #plt.show()
+                ##raise
+
+                ##plt.imshow(jnp.real(evecs_ordered), vmin=-0.2, vmax=0.2)
+                ##plt.show()
+
+
+                ##NOTE: I'm actually looking at the smallest eigenvalues now!
+
+                #all_evals.append(evals)
+                #largest_evals.append(evals_ordered[-1]) #largest
+                ##largest_evals.append(evals_ordered[0]) #smallest
+                #
+                #all_evals_ptl.append(evals_ptl)
+                #largest_evals_ptl.append(evals_ordered_ptl[-1])
+                ##largest_evals_ptl.append(evals_ordered_ptl[0])
+
+                #all_evals_fdbk.append(evals_fdbk)
+                #largest_evals_fdbk.append(evals_ordered_fdbk[-1])
+                ##largest_evals_ptl.append(evals_ordered_ptl[0])
             
             hs.append(h)
             us.append(u)
@@ -580,9 +635,38 @@ def implicit_coupled_solver(u_trial, h_trial,\
             h_old = h.copy()
 
 
-        return u, h, hs, us, largest_evals, jnp.array(all_evals), \
-               largest_evals_ptl, jnp.array(all_evals_ptl), \
-               largest_evals_fdbk, jnp.array(all_evals_fdbk)
+        if compute_evals_at_ss:
+            H = make_adv_rhs(accumulation)
+            H_jac = jacfwd(H, argnums=(0,1))(u, h, basal_melt_rate)
+
+            L, fdbk, dHdh = construct_tangent_propagator(H_jac[1],\
+                                                         H_jac[0],\
+                                                         mom_res_jac[1],\
+                                                         mom_res_jac[0])
+
+            
+
+            s_gnd = h + b
+            s_flt = h*(1-0.917/1.027)
+
+            ffi = np.where(s_gnd<s_flt)[0][0]
+
+
+            L_cr = L[:ffi, :ffi]
+
+
+
+            #eigenvalues
+            evals, evecs = jnp.linalg.eig(L_cr)
+            order_indices = jnp.argsort(evals)
+            evals_ord = evals[order_indices]
+            evecs_ord = evecs[:, order_indices]
+
+        return u, h, hs, us, evals_ord, evecs_ord
+
+        #return u, h, hs, us, largest_evals, jnp.array(all_evals), \
+        #       largest_evals_ptl, jnp.array(all_evals_ptl), \
+        #       largest_evals_fdbk, jnp.array(all_evals_fdbk)
 
     return newton_solve
 
@@ -768,7 +852,7 @@ rho = 1
 g = 1
 
 lx = 1
-n = 300
+n = 100
 dx = lx/(n-1)
 x = jnp.linspace(0,lx,n)
 
@@ -777,7 +861,7 @@ mu = jnp.zeros((n,)) + 1
 
 #OVERDEEPENED BED
 
-h = 1.2*jnp.exp(-2*x*x*x) #grounded sections
+h = 1.5*jnp.exp(-2*x*x*x) #grounded sections
 #h = jnp.ones_like(x)*0.5 #floating uniform thk
 
 #h = 1.75*jnp.exp(-2*x*x) #just a bit of an odd shaped ice shelf
@@ -841,16 +925,16 @@ h_trial = h.copy()
 
 
 ##TESTING PICARD ITERATION:
-iterator = make_picard_iterator_for_u(mu, h_trial, beta, 10)
+iterator = make_picard_iterator_for_u(mu, h_trial, beta, 20)
 u_end, us = iterator(u_trial)
-print("change to newton")
-iterator = make_u_solver(mu, h_trial, beta, 5)
-u_end, us = iterator(u_end)
+#print("change to newton")
+#iterator = make_u_solver(mu, h_trial, beta, 5)
+#u_end_2, us_2 = iterator(u_trial)
 
 plotboth(h, u_end)
 
 plt.figure(figsize=(10,5))
-for i, u_ in enumerate(us):
+for i, u_ in enumerate(us+us_2):
     plt.plot(u_, label=str(i))
 plt.legend()
 plt.show()
@@ -859,89 +943,104 @@ raise
 
 
 
-###########TRYING TO GET THE JIT COMPILATION GOING:
-
+############TRYING TO GET THE JIT COMPILATION GOING:
+#
 n_timesteps = 30
 n_iterations = 20
 timestep = 1
-
-bmr_init = jnp.zeros_like(accumulation)+0.005
-
-accumulation = accumulation/timestep
-
-
-#bmr_init = bmr_init/timestep
+#
+#bmr_init = jnp.zeros_like(accumulation)+0.005
+#
+#accumulation = accumulation/timestep
+#
+#
+##bmr_init = bmr_init/timestep
+##
+##solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
+##u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init)
+##
+##print(evals)
+##
+##plotboths(hs[:, :], us[:, :], n_timesteps)
+##
+##raise
+#
+#
+#
+#
+#bmr_init = jnp.zeros_like(accumulation)
 #
 #solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
 #u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init)
 #
-#print(evals)
+#largest_eval = evals[-1]
+#largest_evec = evecs[-1]
 #
 #plotboths(hs[:, :], us[:, :], n_timesteps)
 #
+#u_end_2, h_end_2, us_2, hs_2, bmrs_2, evals_2, evecs_2 = solve_and_evolve(u_end, h_end+0.2*jnp.real(largest_evec), bmr_init)
+#
+#plotboths(hs_2[:,:], us_2[:,:], n_timesteps)
+#
+#plt.plot(h_end)
+#plt.plot(h_end_2)
+#plt.show()
+#
+#
 #raise
 
 
-
-
-bmr_init = jnp.zeros_like(accumulation)
-
-solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
-u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init)
-
-largest_eval = evals[-1]
-largest_evec = evecs[-1]
-
-#print(evals)
-#print(largest_evec)
-#raise
-
-plotboths(hs[:, :], us[:, :], n_timesteps)
-
-
-u_end_2, h_end_2, us_2, hs_2, bmrs_2, evals_2, evecs_2 = solve_and_evolve(u_end, h_end+0.2*jnp.real(largest_evec), bmr_init)
-
-plotboths(hs_2[:,:], us_2[:,:], n_timesteps)
-
-plt.plot(h_end)
-plt.plot(h_end_2)
-plt.show()
-
-
-raise
-
-
-#Plotting evolution of largest eigenvalues for steady-state solutions:
+##Plotting evolution of largest eigenvalues for steady-state solutions:
 largest_evals = []
 smallest_evals = []
-for k, bmr_init in enumerate([(jnp.zeros_like(accumulation)+0.05+0.01*i)/timestep for i in range(20)]):
+steady_state_us = []
+steady_state_hs = []
+bmr = jnp.zeros_like(x)
+for k, acc in enumerate([(jnp.zeros_like(x)+0.05-0.004*i)/timestep for i in range(30)]):
     print(k)
 
-    accumulation_scaled = accumulation/timestep
-    bmr_init_scaled = bmr_init/timestep
+    accumulation_scaled = acc/timestep
 
     solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation_scaled, timestep, n_iterations, n_timesteps, compute_eigenvalues=True)
-    u_end, h_end, us, hs, bmrs, evals, evecs = solve_and_evolve(u_trial, h_trial, bmr_init_scaled)
-    
+    u_end, h_end, us, hs, bmrs, evals, evecs, gnd_mask = solve_and_evolve(u_trial, h_trial, bmr)
+   
     u_trial = u_end.copy()
     h_trial = h_end.copy()
+
+
+    s_gnd = h_end + b
+    s_flt = h_end*(1-0.917/1.027)
+
+    ffi = np.where(s_gnd<s_flt)[0][0]
+
+    evals = evals[:ffi]
+    evecs = evecs[:ffi, :ffi]
+
+    if len(evals)==0:
+        plt.plot(largest_evals)
+        plt.show()
+        plt.plot(smallest_evals)
+        plt.show()
+
+        plotboths(steady_state_hs, steady_state_us, k)
+
+    steady_state_us.append(u_end)
+    steady_state_hs.append(h_end)
+
+    u_trial = u_end.copy()
+    h_trial = h_end.copy()
+    
+    print(evals[-1])
 
     largest_evals.append(evals[-1])
     smallest_evals.append(evals[0])
 
-    print(evals[-2:])
 
-    #plt.imshow(jnp.flipud(jnp.transpose(jnp.real(evecs))))
+    #plt.imshow(jnp.rot90(jnp.real(evecs)), vmin=-0.1, vmax=0.1, cmap="RdBu_r")
     #plt.show()
-    #same thing:
-    plt.imshow(jnp.rot90(jnp.real(evecs)))
-    plt.show()
 
-    plt.plot(evecs[-2])
-    plt.plot(evecs[-1])
-    plt.show()
 
-    plotboths(hs[::10, :], us[::10, :], n_timesteps)
+    #plotboths(hs[::2, :], us[::2, :], n_timesteps)
 
 
 plt.plot(largest_evals)
