@@ -11,7 +11,7 @@ import matplotlib.cm as cm
 
 np.set_printoptions(precision=4, suppress=False, linewidth=np.inf, threshold=np.inf)
 
-def make_nonlinear_momentum_residual(beta, mu_cc, rheology_factor=3e-2):
+def make_nonlinear_momentum_residual(beta, mu_cc):
     #NOTE: taken out the nonlinearity
 
     mu_face = jnp.zeros((n+1,))
@@ -20,7 +20,7 @@ def make_nonlinear_momentum_residual(beta, mu_cc, rheology_factor=3e-2):
     mu_face = mu_face.at[0].set(mu_cc[1])
 
     
-    def mom_res(u, h):
+    def mom_res(u, h, rheology_factor=5e-2):
         s_gnd = h + b
         s_flt = h*(1-0.917/1.027)
         s = jnp.maximum(s_gnd, s_flt)
@@ -428,7 +428,7 @@ def construct_tangent_propagator(dHdh, dHdu, dGdh, dGdu):
     return feedback_term + dHdh, feedback_term, dHdh
 
 
-def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
+def implicit_coupled_solver_compiled(mu, beta, \
                             accumulation, dt, \
                             num_iterations, num_timesteps, \
                             compute_eigenvalues=False, \
@@ -436,7 +436,7 @@ def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
 
 
 
-    mom_res = make_nonlinear_momentum_residual(beta, mu, rheology_factor)
+    mom_res = make_nonlinear_momentum_residual(beta, mu)
     adv = make_adv_operator(dt, accumulation)
     #adv = make_adv_operator_acc_dependent_on_old_h(dt, accumulation)
 
@@ -454,11 +454,11 @@ def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
         return i<num_iterations
 
 
-    def make_newton_iterate(bmr, h_old):
+    def make_newton_iterate(bmr, rf, h_old):
         def newton_iterate(state):
             u, h, i = state
             
-            visc_jac = visc_jac_fn(u, h)
+            visc_jac = visc_jac_fn(u, h, rf)
             adv_jac = adv_jac_fn(u, h, h_old, bmr)
     
             full_jacobian = jnp.block(
@@ -466,7 +466,7 @@ def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
                                         [adv_jac[0] , adv_jac[1]] ]
                                       )
     
-            rhs = jnp.concatenate((-mom_res(u, h), -adv(u, h, h_old, bmr)))
+            rhs = jnp.concatenate((-mom_res(u, h, rf), -adv(u, h, h_old, bmr)))
     
             dvar = lalg.solve(full_jacobian, rhs)
     
@@ -480,36 +480,36 @@ def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
 
 
     def timestep(state):
-        u, h, bmr, us, hs, bmrs, t = state
+        u, h, us, hs, bmr, rf, t = state
 
         #jax.debug.print("t = {}", t)
 
-        bmr_new = bmr.copy() #could make this some time-dependent function y'see.
+        #bmr_new = bmr.copy() #could make this some time-dependent function y'see.
 
-        newton_iterate = make_newton_iterate(bmr_new, h.copy())
+        newton_iterate = make_newton_iterate(bmr, rf, h.copy())
 
         initial_state = (u, h, 0)
         u_new, h_new, i = jax.lax.while_loop(newton_condition, newton_iterate, initial_state)
 
         us = us.at[t].set(u_new)
         hs = hs.at[t].set(h_new)
-        bmrs = bmrs.at[t].set(bmr_new)
+        #bmrs = bmrs.at[t].set(bmr_new)
 
-        return u_new, h_new, bmr_new, us, hs, bmrs, t+1
+        return u_new, h_new, us, hs, bmr, rf, t+1
         
 
     @jax.jit
-    def iterator(u_init, h_init, bmr_init):
+    def iterator(u_init, h_init, bmr, rheology_factor):
 
         #have to pre-allocate these things because we can't use python-side
         #mutations like appending to lists in a lax while_loop!
         us = jnp.zeros((num_timesteps, n))
         hs = jnp.zeros((num_timesteps, n))
-        bmrs = jnp.zeros((num_timesteps, n))
+        #bmrs = jnp.zeros((num_timesteps, n))
 
-        initial_state = (u_init, h_init, bmr_init, us, hs, bmrs, 0)
+        initial_state = (u_init, h_init, us, hs, bmr, rheology_factor, 0)
 
-        u, h, bmr, us, hs, bmrs, t = jax.lax.while_loop(timestep_condition, timestep, initial_state)
+        u, h, us, hs, bmr, rheology_factor, t = jax.lax.while_loop(timestep_condition, timestep, initial_state)
 
 
         if compute_eigenvalues or compute_singular_values:
@@ -562,7 +562,7 @@ def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
                 #evals_ordered_ptl = evals[indices_ptl]
                 #evecs_ordered_ptl = evecs[:,indices_ptl]
     
-                return u, h, us, hs, bmrs, evals_ord, evecs_ord, mask
+                return u, h, us, hs, bmr, rheology_factor, evals_ord, evecs_ord, mask
 
             elif compute_singular_values:
 
@@ -584,10 +584,10 @@ def implicit_coupled_solver_compiled(mu, beta, rheology_factor, \
                 rsvecs_ord_fdbk = jnp.transpose(rsvecs_t_fdbk)[:, order_indices_fdbk]
 
 
-                return u, h, us, hs, bmrs, svals_ord, rsvecs_ord,\
+                return u, h, us, hs, bmr, rheology_factor, svals_ord, rsvecs_ord,\
                        svals_ord_ptl, rsvecs_ord_ptl, svals_ord_fdbk, rsvecs_ord_fdbk 
         else:
-            return u, h, us, hs, bmrs
+            return u, h, us, hs, bmr, rheology_factor
 
     return iterator
 
@@ -1282,31 +1282,33 @@ smallest_evals = []
 steady_state_us = []
 steady_state_hs = []
 bmr = jnp.zeros_like(x)
-timestep = 1
+timestep = 0.2
 n_iterations = 10
 n_timesteps = 1
-initial_n_timesteps = 100
+initial_n_timesteps = 1000
 
 accumulation_scaled = (jnp.zeros_like(x) + 0.05)/timestep
 
 
-solve_and_evolve_initial = implicit_coupled_solver_compiled(mu, beta, 3e-2, accumulation_scaled,\
+solve_and_evolve_initial = implicit_coupled_solver_compiled(mu, beta, accumulation_scaled,\
                                                             timestep, n_iterations, initial_n_timesteps,\
                                                             compute_eigenvalues=True)
 
-n_different_As = 20
+solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation_scaled,\
+                                                            timestep, n_iterations, n_timesteps,\
+                                                            compute_eigenvalues=True)
+
+n_different_As = 600
+
 for k in range(n_different_As):
 
-    rf = 3e-2*(1 - k/n_different_As + 1e-4)
+    rf = 3e-2*(1 - k/800+ 1e-4)
     print(rf)
 
     if k==0:
-        u_end, h_end, us, hs, bmrs, evals, evecs, gnd_mask = solve_and_evolve_initial(u_trial, h_trial, bmr)
+        u_end, h_end, us, hs, bmr, _, evals, evecs, gnd_mask = solve_and_evolve_initial(u_trial, h_trial, bmr, rf)
     else:
-        solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, rf, accumulation_scaled,\
-                                                            timestep, n_iterations, n_timesteps,\
-                                                            compute_eigenvalues=True)
-        u_end, h_end, us, hs, bmrs, evals, evecs, gnd_mask = solve_and_evolve(u_trial, h_trial, bmr)
+        u_end, h_end, us, hs, bmr, _, evals, evecs, gnd_mask = solve_and_evolve(u_trial, h_trial, bmr, rf)
 
     u_trial = u_end.copy()
     h_trial = h_end.copy()
@@ -1329,7 +1331,7 @@ for k in range(n_different_As):
         #plotboths(steady_state_hs, steady_state_us, k)
         plotgeoms(steady_state_hs, k)
     
-    print(evals[-1])
+    #print(evals[-1])
 
     steady_state_us.append(u_end)
     steady_state_hs.append(h_end)
