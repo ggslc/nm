@@ -72,7 +72,7 @@ def make_nonlinear_momentum_residual(beta, mu_cc):
 
     return mom_res
 
-def make_nonlinear_momentum_residual_stress_split_at_gl(beta, mu_cc):
+def make_nonlinear_momentum_residual_osd_at_gl(beta, mu_cc):
     #NOTE: taken out the nonlinearity
 
     mu_face = jnp.zeros((n+1,))
@@ -81,10 +81,22 @@ def make_nonlinear_momentum_residual_stress_split_at_gl(beta, mu_cc):
     mu_face = mu_face.at[0].set(mu_cc[1])
 
     
-    def mom_res(u, h):
+    def mom_res(u, h, rheology_factor=5e-2):
         s_gnd = h + b
         s_flt = h*(1-0.917/1.027)
         s = jnp.maximum(s_gnd, s_flt)
+        #ffci = jnp.where(s_flt>s_gnd)[0][0] #first_floating_cell_index
+
+        p_W = 1.027 * jnp.maximum(0, h-s)
+        p_I = 0.917 * h
+        beta_int = beta * (1 - (p_W / p_I))
+        
+        is_floating = s_flt > s_gnd
+        # ffci will be the first index where is_floating is True,
+        # or `n` (out of bounds) if no cells are floating.
+        ffci = jnp.where(jnp.any(is_floating), jnp.argmax(is_floating), n)
+
+
 
         dudx = jnp.zeros((n+1,))
         dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
@@ -92,9 +104,10 @@ def make_nonlinear_momentum_residual_stress_split_at_gl(beta, mu_cc):
         dudx = dudx.at[-1].set(0)
         ##set (or 'use' I guess) reflection boundary condition
         dudx = dudx.at[0].set(2*u[0]/dx)
+
        
 
-        sliding = beta * u * dx
+        sliding = beta_int * u * dx
         #making sure the Jacobian is full rank!
         sliding = sliding.at[:].set(jnp.where(h>0, jnp.where(s_gnd>s_flt, sliding, 0), u * dx))
 
@@ -105,7 +118,8 @@ def make_nonlinear_momentum_residual_stress_split_at_gl(beta, mu_cc):
         h_face = h_face.at[0].set(h[0])
 
 
-        mu_face_nl = 5e-2 * mu_face * (jnp.abs(dudx)+epsilon)**(-2/3)
+        mu_face_nl = rheology_factor * mu_face * (jnp.abs(dudx)+epsilon)**(-2/3)
+        #mu_face_nl = 1e-1 * mu_face * (jnp.abs(dudx)+epsilon)**(-2/3)
         #mu_face_nl = mu_face.copy()
 
 
@@ -121,6 +135,11 @@ def make_nonlinear_momentum_residual_stress_split_at_gl(beta, mu_cc):
         #h_grad_s = h_grad_s.at[-2].set(-0.1)
         h_grad_s = h_grad_s.at[0].set(h[0] * 0.5 * (s[1] - s[0]))
       
+        #one-sided differences at gl
+        #h_grad_s = h_grad_s.at[ffci].set(h[ffci] * (s[ffci+1] - s[ffci]))
+        #h_grad_s = h_grad_s.at[ffci-1].set(h[ffci-1] * (s[ffci-1] - s[ffci-2]))
+      
+
         #print(flux)
         #print(sliding)
         #print(h_grad_s)
@@ -437,7 +456,7 @@ def implicit_coupled_solver_compiled(mu, beta, \
 
 
 
-    mom_res = make_nonlinear_momentum_residual(beta, mu)
+    mom_res = make_nonlinear_momentum_residual_osd_at_gl(beta, mu)
     adv = make_adv_operator(dt, accumulation)
     #adv = make_adv_operator_acc_dependent_on_old_h(dt, accumulation)
     adv_rhs = make_adv_rhs(accumulation)
@@ -544,6 +563,8 @@ def implicit_coupled_solver_compiled(mu, beta, \
 
 
             mask = jnp.where(s_gnd>s_flt, 1, 0)
+            #NOTE:
+            mask = mask.at[0].set(0)
             mask = jnp.outer(mask, mask)
 
             L_cr = L * mask
@@ -558,7 +579,8 @@ def implicit_coupled_solver_compiled(mu, beta, \
 
 
                 #Exhibits critical slowing down:
-                evals, evecs = jnp.linalg.eig(J)
+                #evals, evecs = jnp.linalg.eig(J)
+                evals, evecs = jnp.linalg.eig(L_cr)
                 order_indices = jnp.argsort(jnp.real(evals))
                 evals_ord = evals[order_indices]
                 evecs_ord = evecs[:, order_indices]
@@ -1146,9 +1168,10 @@ rho = 1
 g = 1
 
 lx = 1
-n = 21
-dx = lx/(n-1)
+n = 201
+
 x = jnp.linspace(0,lx,n)
+dx = lx/(n-1)
 
 mu = jnp.zeros((n,)) + 1
 
@@ -1229,31 +1252,65 @@ h_trial = h.copy()
 #######TESTING JACOBIANS:
 
 
-h_test = jnp.array([2.434,2.4389,2.4437,2.4486,2.4534,2.4582,2.4631,2.4679,2.4728,2.4777,2.4827,2.4877,2.4928,2.4979,2.5032,2.5085,2.5139,2.5194,2.525,2.5308,2.5367,2.5427,2.5489,2.5553,2.5618,2.5685,2.5753,2.5824,2.5896,2.5971,2.6047,2.6125,2.6206,2.6288,2.6373,2.646,2.6548,2.6639,2.6731,2.6826,2.6922,2.702,2.7119,2.722,2.7322,2.7425,2.753,2.7635,2.7741,2.7847,2.7954,2.806,2.8166,2.8272,2.8377,2.8481,2.8583,2.8684,2.8783,2.8879,2.8973,2.9064,2.9152,2.9237,2.9318,2.9394,2.9467,2.9534,2.9597,2.9655,2.9707,2.9754,2.9794,2.9829,2.9857,2.9879,2.9895,2.9903,2.9905,2.99,2.9888,2.9869,2.9843,2.981,2.977,2.9723,2.9669,2.9608,2.9541,2.9467,2.9386,2.93,2.9207,2.9109,2.9004,2.8895,2.878,2.866,2.8535,2.8406,2.8272,2.8135,2.7994,2.7849,2.7701,2.755,2.7397,2.7241,2.7082,2.6922,2.676,2.6596,2.6431,2.6264,2.6096,2.5928,2.5758,2.5588,2.5418,2.5247,2.5075,2.4903,2.4731,2.4559,2.4386,2.4213,2.404,2.3867,2.3693,2.3519,2.3344,2.3169,2.2993,2.2816,2.2638,2.246,2.228,2.2098,2.1915,2.173,2.1543,2.1354,2.1162,2.0968,2.077,2.0569,2.0364,2.0156,1.9942,1.9724,1.9501,1.9272,1.9037,1.8795,1.8546,1.8288,1.8022,1.7746,1.7459,1.7161,1.685,1.6525,1.6184,1.5825,1.5446,1.5044,1.4617,1.4158,1.3665,1.3127,1.2543,1.1878,1.1167,1.0246,0.9388,0.7703,0.6634,0.6517,0.6413,0.6319,0.6233,0.6155,0.6083,0.6017,0.5956,0.59,0.5847,0.5798,0.5752,0.5709,0.5668,0.563,0.5594,0.556,0.5528,0.5497,0.5468,0.5441,0.5414,0.539,0.5341])
-u_test = jnp.array([2.5724e-04,7.6986e-04,1.2803e-03,1.7888e-03,2.2952e-03,2.7997e-03,3.3022e-03,3.8027e-03,4.3012e-03,4.7977e-03,5.2922e-03,5.7845e-03,6.2748e-03,6.7628e-03,7.2487e-03,7.7323e-03,8.2136e-03,8.6925e-03,9.1688e-03,9.6427e-03,1.0114e-02,1.0582e-02,1.1048e-02,1.1511e-02,1.1970e-02,1.2427e-02,1.2880e-02,1.3330e-02,1.3777e-02,1.4220e-02,1.4659e-02,1.5095e-02,1.5527e-02,1.5955e-02,1.6379e-02,1.6799e-02,1.7215e-02,1.7627e-02,1.8035e-02,1.8439e-02,1.8839e-02,1.9235e-02,1.9626e-02,2.0014e-02,2.0398e-02,2.0778e-02,2.1154e-02,2.1527e-02,2.1896e-02,2.2262e-02,2.2626e-02,2.2986e-02,2.3343e-02,2.3699e-02,2.4052e-02,2.4403e-02,2.4753e-02,2.5102e-02,2.5450e-02,2.5797e-02,2.6144e-02,2.6491e-02,2.6839e-02,2.7188e-02,2.7538e-02,2.7890e-02,2.8244e-02,2.8600e-02,2.8960e-02,2.9323e-02,2.9689e-02,3.0060e-02,3.0436e-02,3.0817e-02,3.1203e-02,3.1595e-02,3.1994e-02,3.2399e-02,3.2811e-02,3.3231e-02,3.3659e-02,3.4094e-02,3.4539e-02,3.4992e-02,3.5455e-02,3.5927e-02,3.6409e-02,3.6901e-02,3.7403e-02,3.7916e-02,3.8441e-02,3.8976e-02,3.9523e-02,4.0081e-02,4.0651e-02,4.1233e-02,4.1827e-02,4.2434e-02,4.3052e-02,4.3683e-02,4.4327e-02,4.4983e-02,4.5652e-02,4.6333e-02,4.7027e-02,4.7734e-02,4.8453e-02,4.9186e-02,4.9931e-02,5.0688e-02,5.1459e-02,5.2242e-02,5.3038e-02,5.3846e-02,5.4667e-02,5.5501e-02,5.6348e-02,5.7207e-02,5.8080e-02,5.8965e-02,5.9863e-02,6.0774e-02,6.1699e-02,6.2638e-02,6.3590e-02,6.4556e-02,6.5537e-02,6.6533e-02,6.7544e-02,6.8572e-02,6.9616e-02,7.0677e-02,7.1756e-02,7.2854e-02,7.3972e-02,7.5111e-02,7.6272e-02,7.7456e-02,7.8665e-02,7.9901e-02,8.1165e-02,8.2459e-02,8.3786e-02,8.5147e-02,8.6545e-02,8.7984e-02,8.9466e-02,9.0995e-02,9.2576e-02,9.4211e-02,9.5908e-02,9.7670e-02,9.9505e-02,1.0142e-01,1.0342e-01,1.0552e-01,1.0773e-01,1.1006e-01,1.1253e-01,1.1515e-01,1.1794e-01,1.2093e-01,1.2415e-01,1.2764e-01,1.3144e-01,1.3561e-01,1.4024e-01,1.4540e-01,1.5125e-01,1.5793e-01,1.6583e-01,1.7501e-01,1.8700e-01,2.0029e-01,2.2427e-01,2.4175e-01,3.2948e-01,3.3756e-01,3.4525e-01,3.5258e-01,3.5961e-01,3.6636e-01,3.7288e-01,3.7918e-01,3.8528e-01,3.9120e-01,3.9696e-01,4.0258e-01,4.0805e-01,4.1340e-01,4.1864e-01,4.2376e-01,4.2879e-01,4.3372e-01,4.3857e-01,4.4333e-01,4.4802e-01,4.5263e-01,4.5718e-01,4.6166e-01,4.6605e-01])
+#h_test = jnp.array([2.434,2.4389,2.4437,2.4486,2.4534,2.4582,2.4631,2.4679,2.4728,2.4777,2.4827,2.4877,2.4928,2.4979,2.5032,2.5085,2.5139,2.5194,2.525,2.5308,2.5367,2.5427,2.5489,2.5553,2.5618,2.5685,2.5753,2.5824,2.5896,2.5971,2.6047,2.6125,2.6206,2.6288,2.6373,2.646,2.6548,2.6639,2.6731,2.6826,2.6922,2.702,2.7119,2.722,2.7322,2.7425,2.753,2.7635,2.7741,2.7847,2.7954,2.806,2.8166,2.8272,2.8377,2.8481,2.8583,2.8684,2.8783,2.8879,2.8973,2.9064,2.9152,2.9237,2.9318,2.9394,2.9467,2.9534,2.9597,2.9655,2.9707,2.9754,2.9794,2.9829,2.9857,2.9879,2.9895,2.9903,2.9905,2.99,2.9888,2.9869,2.9843,2.981,2.977,2.9723,2.9669,2.9608,2.9541,2.9467,2.9386,2.93,2.9207,2.9109,2.9004,2.8895,2.878,2.866,2.8535,2.8406,2.8272,2.8135,2.7994,2.7849,2.7701,2.755,2.7397,2.7241,2.7082,2.6922,2.676,2.6596,2.6431,2.6264,2.6096,2.5928,2.5758,2.5588,2.5418,2.5247,2.5075,2.4903,2.4731,2.4559,2.4386,2.4213,2.404,2.3867,2.3693,2.3519,2.3344,2.3169,2.2993,2.2816,2.2638,2.246,2.228,2.2098,2.1915,2.173,2.1543,2.1354,2.1162,2.0968,2.077,2.0569,2.0364,2.0156,1.9942,1.9724,1.9501,1.9272,1.9037,1.8795,1.8546,1.8288,1.8022,1.7746,1.7459,1.7161,1.685,1.6525,1.6184,1.5825,1.5446,1.5044,1.4617,1.4158,1.3665,1.3127,1.2543,1.1878,1.1167,1.0246,0.9388,0.7703,0.6634,0.6517,0.6413,0.6319,0.6233,0.6155,0.6083,0.6017,0.5956,0.59,0.5847,0.5798,0.5752,0.5709,0.5668,0.563,0.5594,0.556,0.5528,0.5497,0.5468,0.5441,0.5414,0.539,0.5341])
+#u_test = jnp.array([2.5724e-04,7.6986e-04,1.2803e-03,1.7888e-03,2.2952e-03,2.7997e-03,3.3022e-03,3.8027e-03,4.3012e-03,4.7977e-03,5.2922e-03,5.7845e-03,6.2748e-03,6.7628e-03,7.2487e-03,7.7323e-03,8.2136e-03,8.6925e-03,9.1688e-03,9.6427e-03,1.0114e-02,1.0582e-02,1.1048e-02,1.1511e-02,1.1970e-02,1.2427e-02,1.2880e-02,1.3330e-02,1.3777e-02,1.4220e-02,1.4659e-02,1.5095e-02,1.5527e-02,1.5955e-02,1.6379e-02,1.6799e-02,1.7215e-02,1.7627e-02,1.8035e-02,1.8439e-02,1.8839e-02,1.9235e-02,1.9626e-02,2.0014e-02,2.0398e-02,2.0778e-02,2.1154e-02,2.1527e-02,2.1896e-02,2.2262e-02,2.2626e-02,2.2986e-02,2.3343e-02,2.3699e-02,2.4052e-02,2.4403e-02,2.4753e-02,2.5102e-02,2.5450e-02,2.5797e-02,2.6144e-02,2.6491e-02,2.6839e-02,2.7188e-02,2.7538e-02,2.7890e-02,2.8244e-02,2.8600e-02,2.8960e-02,2.9323e-02,2.9689e-02,3.0060e-02,3.0436e-02,3.0817e-02,3.1203e-02,3.1595e-02,3.1994e-02,3.2399e-02,3.2811e-02,3.3231e-02,3.3659e-02,3.4094e-02,3.4539e-02,3.4992e-02,3.5455e-02,3.5927e-02,3.6409e-02,3.6901e-02,3.7403e-02,3.7916e-02,3.8441e-02,3.8976e-02,3.9523e-02,4.0081e-02,4.0651e-02,4.1233e-02,4.1827e-02,4.2434e-02,4.3052e-02,4.3683e-02,4.4327e-02,4.4983e-02,4.5652e-02,4.6333e-02,4.7027e-02,4.7734e-02,4.8453e-02,4.9186e-02,4.9931e-02,5.0688e-02,5.1459e-02,5.2242e-02,5.3038e-02,5.3846e-02,5.4667e-02,5.5501e-02,5.6348e-02,5.7207e-02,5.8080e-02,5.8965e-02,5.9863e-02,6.0774e-02,6.1699e-02,6.2638e-02,6.3590e-02,6.4556e-02,6.5537e-02,6.6533e-02,6.7544e-02,6.8572e-02,6.9616e-02,7.0677e-02,7.1756e-02,7.2854e-02,7.3972e-02,7.5111e-02,7.6272e-02,7.7456e-02,7.8665e-02,7.9901e-02,8.1165e-02,8.2459e-02,8.3786e-02,8.5147e-02,8.6545e-02,8.7984e-02,8.9466e-02,9.0995e-02,9.2576e-02,9.4211e-02,9.5908e-02,9.7670e-02,9.9505e-02,1.0142e-01,1.0342e-01,1.0552e-01,1.0773e-01,1.1006e-01,1.1253e-01,1.1515e-01,1.1794e-01,1.2093e-01,1.2415e-01,1.2764e-01,1.3144e-01,1.3561e-01,1.4024e-01,1.4540e-01,1.5125e-01,1.5793e-01,1.6583e-01,1.7501e-01,1.8700e-01,2.0029e-01,2.2427e-01,2.4175e-01,3.2948e-01,3.3756e-01,3.4525e-01,3.5258e-01,3.5961e-01,3.6636e-01,3.7288e-01,3.7918e-01,3.8528e-01,3.9120e-01,3.9696e-01,4.0258e-01,4.0805e-01,4.1340e-01,4.1864e-01,4.2376e-01,4.2879e-01,4.3372e-01,4.3857e-01,4.4333e-01,4.4802e-01,4.5263e-01,4.5718e-01,4.6166e-01,4.6605e-01])
+#
+#momres_test = make_nonlinear_momentum_residual(beta, mu)
+#momres_test_jac = jacfwd(momres_test, argnums=(0,1))(u_test, h_test)
+#dgdu = momres_test_jac[0]
+#dgdh = momres_test_jac[1]
+#
+#pert = jnp.zeros_like(u_test)+1e-6
+#
+#ad_g_pert_u = dgdu @ pert
+#ad_g_pert_h = dgdh @ pert
+#
+#
+#fd_g_pert_u = momres_test(u_test+pert, h_test)-momres_test(u_test, h_test)
+#fd_g_pert_h = momres_test(u_test, h_test+pert)-momres_test(u_test, h_test)
+#
+##plt.plot(ad_g_pert_u[1:])
+##plt.plot(fd_g_pert_u[1:])
+##plt.show()
+##
+###print("----------------")
+##
+##plt.plot(ad_g_pert_h[1:])
+##plt.plot(fd_g_pert_h[1:])
+##plt.show()
+###raise
+#
+#
+#bmr = jnp.zeros_like(h_test)
+#
+#advres_test = make_adv_operator(1, accumulation)
+#advres_test_jac = jacfwd(advres_test, argnums=(0,1))(u_test, h_test, h_test, bmr)
+#dhdu = advres_test_jac[0]
+#dhdh = advres_test_jac[1]
+#
+#ad_h_pert_u = dhdu @ pert
+#ad_h_pert_h = dhdh @ pert
+#
+#fd_h_pert_u = advres_test(u_test+pert, h_test, h_test, bmr)-advres_test(u_test, h_test, h_test, bmr)
+#fd_h_pert_h = advres_test(u_test, h_test+pert, h_test, bmr)-advres_test(u_test, h_test, h_test, bmr)
+#
+#
+#plt.plot(ad_h_pert_u[1:])
+#plt.plot(fd_h_pert_u[1:])
+#plt.show()
+#
+#plt.plot(ad_h_pert_h[1:])
+#plt.plot(fd_h_pert_h[1:])
+#plt.show()
+#raise
+#
 
-momres_test = make_nonlinear_momentum_residual(beta, mu)
-momres_test_jac = jacfwd(momres_test, argnums=(0,1))(u_test, h_test)
-dgdu = momres_test_jac[0]
-dgdh = momres_test_jac[1]
-
-pert = jnp.zeros_like(u_test)+1e-5
-
-ad_g_pert_u = dgdu @ pert
-ad_g_pert_h = dgdh @ pert
 
 
-fd_g_pert_u = momres_test(u_test+pert, h_test)-momres_test(u_test, h_test)
-fd_g_pert_h = momres_test(u_test, h_test+pert)-momres_test(u_test, h_test)
 
-print(ad_g_pert_u)
-print(fd_g_pert_u)
-print(ad_g_pert_u - fd_g_pert_u)
-print("----------------")
-print(ad_g_pert_h)
-print(fd_g_pert_h)
-print(ad_g_pert_h - fd_g_pert_h)
-raise
+
+
+
 
 
 ###TESTING PICARD ITERATION:
@@ -1345,27 +1402,28 @@ smallest_evals = []
 steady_state_us = []
 steady_state_hs = []
 bmr = jnp.zeros_like(x)
-timestep = 0.2
-n_iterations = 10
+timestep = 1
+n_iterations = 30
 n_timesteps = 1
-initial_n_timesteps = 4
+initial_n_timesteps = 2
 
 accumulation_scaled = (jnp.zeros_like(x) + 0.05)/timestep
 
 
 solve_and_evolve_initial = implicit_coupled_solver_compiled(mu, beta, accumulation_scaled,\
-                                                            timestep, n_iterations, 1,\
+                                                            timestep, n_iterations, initial_n_timesteps,\
                                                             compute_eigenvalues=True)
 
 solve_and_evolve = implicit_coupled_solver_compiled(mu, beta, accumulation_scaled,\
                                                             timestep, n_iterations, n_timesteps,\
                                                             compute_eigenvalues=True)
 
-n_different_As = 2
+n_different_As = 1
 
 for k in range(n_different_As):
 
     rf = 3e-2*(1 - (k)/800+ 1e-4)
+    
     #rf = 8e-3*(1 - k/350 + 1e-4)
     print(rf)
 
@@ -1386,8 +1444,7 @@ for k in range(n_different_As):
     s_gnd = h_end + b
     s_flt = h_end*(1-0.917/1.027)
 
-    ffi = np.where(s_gnd<s_flt)[0][0]
-
+    #ffi = np.where(s_gnd<s_flt)[0][0]
     #evals = evals[:ffi]
     #evecs = evecs[:ffi, :ffi]
 
@@ -1398,7 +1455,7 @@ for k in range(n_different_As):
         plt.plot(smallest_evals)
         plt.show()
 
-        #plotboths(steady_state_hs, steady_state_us, k)
+        plotboths(steady_state_hs, steady_state_us, k)
         plotgeoms(steady_state_hs, k)
     
     #print(evals[-1])
@@ -1428,6 +1485,7 @@ for k in range(n_different_As):
 #plt.imshow(jnp.real(pad_arrays_with_nan(all_evals)))
 #plt.show()
 
+plotboths(steady_state_hs, steady_state_us, k)
 plotgeoms(steady_state_hs, k)
 plt.plot(largest_evals)
 plt.show()
