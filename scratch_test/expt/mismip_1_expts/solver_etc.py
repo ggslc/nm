@@ -88,8 +88,6 @@ def make_nonlinear_momentum_residual_osd_at_gl(C):
         
         grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
         beta_int = C * (1/(jnp.abs(u)**(2/3) + (1e-8)**(2/3))) * grounded_mask
-        print(beta_int)
-        raise
 
         dudx = jnp.zeros((n+1,))
         dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
@@ -102,7 +100,7 @@ def make_nonlinear_momentum_residual_osd_at_gl(C):
         mu_face = B * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
 
 
-        sliding = beta * u * dx
+        sliding = beta_int * u * dx
         #making sure the Jacobian is full rank!
         sliding = sliding.at[:].set(jnp.where(h>0, jnp.where(s_gnd>s_flt, sliding, 0), u * dx))
 
@@ -130,9 +128,10 @@ def make_nonlinear_momentum_residual_osd_at_gl(C):
         h_grad_s = rho * g * h_grad_s
 
         #print(flux)
-        print(sliding)
+        #print(sliding)
         #print(h_grad_s)
-        raise
+        #raise
+
         #plt.plot(-h_grad_s)
         #plt.plot(sliding)
         #plt.plot(flux)
@@ -574,12 +573,25 @@ def make_picard_iterator_for_joint_impl_problem(C, iterations, dt, bmr):
     return iterator
 
 
-#def make_joint_picard_iterator_compiled(C, iterations, dt):
+def construct_tlo(u, h, C, accumulation, bmr):
 
-#    mom_res = make_linear_momentum_residual_osd_at_gl()
-#    adv_res = make_adv_residual(dt, accumulation)
+    mom_res_fn = make_nonlinear_momentum_residual_osd_at_gl(C)
+    adv_rhs_fn = make_adv_rhs(accumulation)
+
+    mom_res_jac = jacfwd(mom_res_fn, argnums=(0,1))(u,h)
+    adv_rhs_jac = jacfwd(adv_rhs_fn, argnums=(0,1))(u,h,bmr)
 
 
+    #Naive approach
+    dGdu_inv = jnp.linalg.inv(mom_res_jac[0])
+    int_ = dGdu_inv @ mom_res_jac[1]
+    
+    feedback_term = - adv_rhs_jac[0] @ int_
+    
+    #L = (-dHdu @ int_ + dHdh)
+    #print(L-dHdh)
+    
+    return feedback_term + adv_rhs_jac[1], feedback_term, adv_rhs_jac[1]
 
 
 def make_picard_iterator_for_u_compiled(C, iterations):
@@ -739,19 +751,6 @@ def make_adv_rhs(accumulation):
         return  - ( h_flux[1:(n+1)] - h_flux[:n] )/dx + acc
     
     return adv 
-
-
-def construct_tangent_propagator(dHdh, dHdu, dGdh, dGdu):
-    #Naive approach
-    dGdu_inv = jnp.linalg.inv(dGdu)
-    int_ = dGdu_inv @ dGdh
-    
-    feedback_term = -dHdu @ int_
-    
-    #L = (-dHdu @ int_ + dHdh)
-    #print(L-dHdh)
-    
-    return feedback_term + dHdh, feedback_term, dHdh
 
 
 def plotgeom(thk):
@@ -956,7 +955,7 @@ B = 2 * (A**(-1/3))
 epsilon_visc = 3e-11
 
 
-b = 720 - 778.5*x/750_000
+#b = 720 - 778.5*x/750_000
 
 
 x_s = x/l
@@ -972,11 +971,40 @@ h_trial = h_init.copy()
 #plotgeom(h_trial)
 #raise
 
+
+
+
+#####Having a look at eigenvalue spectra:
+#NOTE: ALL OF BELOW (pretty much) USING:
+#h_init = 4000*jnp.exp(-2*((x_s)**15))
+#b = 720 - 778.5*x/750_000
+
+u = jnp.load("./u_ss_2_1000cells.npy")
+h = jnp.load("./h_ss_2_1000cells.npy")
+
+L, fbk, ad = construct_tlo(u, h, C, accumulation, 0)
+
+evals, evecs = jnp.linalg.eig(L)
+order_indices = jnp.argsort(evals)
+evals_ord = evals[order_indices]
+evecs_ord = evecs[:, order_indices]
+
+#plt.imshow(jnp.rot90(jnp.real(evecs_ord)), vmin=-0.1, vmax=0.1, cmap="RdBu_r")
+#plt.show()
+#raise
+
+#plt.plot(evals_ord)
+#plt.show()
+
+
+
+raise
+
 #####Testing implicit coupled picard solver
 n_its = 60
 #dt = 5e8
 
-n_timesteps = 40
+n_timesteps = 80
 
 dt = 1e10
 iteratorr = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, n_its, dt, 0)
@@ -993,6 +1021,9 @@ for i in range(n_timesteps):
     #print(dx/jnp.max(u))
     uends.append(u)
     hends.append(h)
+
+jnp.save("./u_ss_2_1000cells.npy", u)
+jnp.save("./h_ss_2_1000cells.npy", h)
 plotboths(hends, uends, n_timesteps)
 
 raise
