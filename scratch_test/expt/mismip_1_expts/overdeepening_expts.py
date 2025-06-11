@@ -74,7 +74,7 @@ def make_linear_momentum_residual_osd_at_gl():
     return mom_res
 
 
-def make_nonlinear_momentum_residual_osd_at_gl(C):
+def make_nonlinear_momentum_residual_osd_at_gl(C, B_int):
 
     def mom_res(u, h):
         s_gnd = h + b
@@ -97,7 +97,7 @@ def make_nonlinear_momentum_residual_osd_at_gl(C):
         dudx = dudx.at[0].set(2*u[0]/dx)
 
 
-        mu_face = B * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
+        mu_face = B_int * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
 
 
         sliding = beta_int * u * dx
@@ -260,7 +260,7 @@ def make_adv_residual(dt, accumulation):
 
     return adv_res    
 
-def make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B, iterations, dt, bmr):
+def make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_int, iterations, dt, bmr):
     
     mom_res = make_linear_momentum_residual_osd_at_gl()
     adv_res = make_adv_residual(dt, accumulation)
@@ -276,7 +276,7 @@ def make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B, iterations, d
         #set reflection boundary condition
         dudx = dudx.at[0].set(2*u[0]/dx)
     
-        mu_nl = B * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
+        mu_nl = B_int * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
 
         #mu_nl = B * (epsilon_visc**(-2/3))
 
@@ -573,9 +573,9 @@ def make_picard_iterator_for_joint_impl_problem(C, iterations, dt, bmr):
     return iterator
 
 
-def construct_tlo(u, h, C, accumulation, bmr):
+def construct_tlo(u, h, C, B_int, accumulation, bmr):
 
-    mom_res_fn = make_nonlinear_momentum_residual_osd_at_gl(C)
+    mom_res_fn = make_nonlinear_momentum_residual_osd_at_gl(C, B_int)
     adv_rhs_fn = make_adv_rhs(accumulation)
 
     mom_res_jac = jacfwd(mom_res_fn, argnums=(0,1))(u,h)
@@ -592,6 +592,39 @@ def construct_tlo(u, h, C, accumulation, bmr):
     #print(L-dHdh)
     
     return feedback_term + adv_rhs_jac[1], feedback_term, adv_rhs_jac[1]
+
+
+def construct_full_jacobian(u, h, C, B_int, accumulation, bmr):
+    mom_res_fn = make_nonlinear_momentum_residual_osd_at_gl(C, B_int)
+    adv_rhs_fn = make_adv_rhs(accumulation)
+
+    mom_res_jac = jacfwd(mom_res_fn, argnums=(0,1))(u,h)
+    adv_rhs_jac = jacfwd(adv_rhs_fn, argnums=(0,1))(u,h,bmr)
+
+    full_jacobian = jnp.block(
+                                  [ [mom_res_jac[0], mom_res_jac[1]],
+                                    [adv_rhs_jac[0], adv_rhs_jac[1]] ]
+                                  )
+
+    return full_jacobian
+    
+
+def construct_full_full_jacobian(u, h, C, B_int, accumulation, bmr, dt):
+    mom_res_fn = make_nonlinear_momentum_residual_osd_at_gl(C, B_int)
+    adv_res_fn = make_adv_residual(dt, accumulation)
+
+    mom_res_jac = jacfwd(mom_res_fn, argnums=(0,1))(u,h)
+    adv_res_jac = jacfwd(adv_res_fn, argnums=(0,1))(u,h,h.copy(),bmr)
+
+    full_jacobian = jnp.block(
+                                  [ [mom_res_jac[0], mom_res_jac[1]],
+                                    [adv_res_jac[0], adv_res_jac[1]] ]
+                                  )
+
+    return full_jacobian
+    
+
+
 
 
 def make_picard_iterator_for_u_compiled(C, iterations):
@@ -930,7 +963,7 @@ def plotgeoms(thks, upper_lim, title=None, savepath=None, axis_limits=None, show
 
 
 
-n = 101
+n = 1001
 l = 1_800_000
 x = jnp.linspace(0, l, n)
 dx = x[1]-x[0]
@@ -1001,52 +1034,378 @@ h_trial = h_init.copy()
 #
 #raise
 
+
+
+
+
+
+#Seeing if some non-normal transient growth can lead to instability:
+
+#A_this_time = 2.2325e-25
+A_this_time = 1.9850000000000001e-25
+B_this_time = 2 * (A_this_time)**(-1/3)
+
+u_init = jnp.load("./overdeepening_misc/continuation/u_ss_1000cells_A_{}.npy".format(A_this_time))
+h_init = jnp.load("./overdeepening_misc/continuation/h_ss_1000cells_A_{}.npy".format(A_this_time))
+
+def init():
+    itns = 40
+    
+    ts_to_ss = 10
+    timestep = 1e10
+    
+    init_iterator = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_this_time, itns, timestep, 0)
+    
+    u = u_init.copy()
+    h = h_init.copy()
+    
+    us = []
+    hs = []
+    for i in range(ts_to_ss):
+        print(i)
+        u, h, res = init_iterator(u, h)
+        #print(dx/jnp.max(u))
+        us.append(u)
+        hs.append(h)
+    
+    plotboths(hs, us, ts_to_ss)
+    
+    jnp.save("./overdeepening_misc/continuation/u_ss_1000cells_A_{}_defoSS.npy".format(A_this_time), u)
+    jnp.save("./overdeepening_misc/continuation/h_ss_1000cells_A_{}_defoSS.npy".format(A_this_time), h)
+    
+    raise
+
+#init()
+
+
+#u = jnp.load("./overdeepening_misc/continuation/u_ss_1000cells_A_{}_defoSS.npy".format(A_this_time))
+#h = jnp.load("./overdeepening_misc/continuation/h_ss_1000cells_A_{}_defoSS.npy".format(A_this_time))
+u = jnp.load("./overdeepening_misc/continuation/u_ss_1000cells_A_2.48e-25.npy")
+h = jnp.load("./overdeepening_misc/continuation/h_ss_1000cells_A_2.48e-25.npy")
+
+s_gnd = h + b
+s_flt = h*(1-rho/rho_w)
+ffi = np.where(s_gnd<s_flt)[0][0]
+
+
+mask = jnp.where(s_gnd>s_flt, 1, 0)
+mask = jnp.outer(mask, mask)
+
+
+L, fdbk, L_adv = construct_tlo(u, h, C, B_this_time, accumulation, 0)
+
+
+evals, evecs = jnp.linalg.eig(L[:ffi-1, :ffi-1])
+order_indices = jnp.argsort(evals)
+evals_ord = evals[order_indices]
+evecs_ord = evecs[:, order_indices]
+
+lsvecs, svals, rsvecs_t = jnp.linalg.svd(L[:ffi-1,:ffi-1])
+order_indices = jnp.argsort(svals)
+svals_ord = svals[order_indices]
+rsvecs_ord = jnp.transpose(rsvecs_t)[:, order_indices]
+
+#plt.plot(evecs_ord[:,-1])
+#plt.show()
+#
+#plt.plot(rsvecs_ord[:,-1])
+#plt.show()
+#
+##raise
+#
+#plt.plot(evals_ord)
+#plt.show()
+#
+#plt.plot(svals_ord)
+#plt.show()
+
+
+
+leading_ev = evecs_ord[:,0]
+leading_sv = rsvecs_ord[:,-1]
+
+
+
+
+h_mod_ev = h.copy()
+h_mod_ev = h_mod_ev.at[:ffi-1].set(h_mod_ev[:ffi-1] + 250*jnp.real(leading_ev/jnp.linalg.norm(leading_ev)))
+
+h_mod_sv = h.copy()
+h_mod_sv = h_mod_sv.at[:ffi-1].set(h_mod_sv[:ffi-1] + 250*jnp.real(leading_sv/jnp.linalg.norm(leading_sv)))
+
+
+timesteps = 30
+timestep = 5e7
+pic_its = 30
+
+iterator = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_this_time, pic_its, timestep, 0)
+
+
+hs_sv = [h.copy()]
+hs_ev = [h.copy()]
+
+h_ev = h_mod_ev.copy()
+h_sv = h_mod_sv.copy()
+u_ev = u.copy()
+u_sv = u.copy()
+
+hs_sv.append(h_sv)
+hs_ev.append(h_ev)
+
+norms_ev = [250]
+norms_sv = [250]
+
+for ts in range(timesteps):
+    print(ts)
+    u_ev,h_ev,_ = iterator(u_ev, h_ev)
+    u_sv,h_sv,_ = iterator(u_sv, h_sv)
+
+    hs_sv.append(h_sv)
+    hs_ev.append(h_ev)
+
+    norms_ev.append(jnp.linalg.norm(h-h_ev))
+    norms_sv.append(jnp.linalg.norm(h-h_sv))
+
+plt.plot(norms_ev)
+plt.plot(norms_sv)
+plt.show()
+#raise
+
+plotgeoms(hs_ev, timesteps)
+plotgeoms(hs_sv, timesteps)
+
+
+raise
+
+
+
+
+####Having a look at SVs of TLO for unsteady problem
+#initialise in the steady-state geometry for A=5e-26
+
+
+def svs_dynamic_test():
+    u_init = jnp.load("./overdeepening_misc/u_ss_1000cells.npy")
+    h_init = jnp.load("./overdeepening_misc/h_ss_1000cells.npy")
+    
+    A_larger = 7e-25
+    B_larger = 2 * (A_larger**(-1/3))
+    
+    timestep = 5e9
+    n_timesteps = 50
+    pic_its = 30
+    
+    iteratorr = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_larger, pic_its, timestep, 0)
+    
+    us = []
+    hs = []
+    largest_evals = []
+    largest_svals = []
+    largest_rsvecs = []
+    largest_svals_adv = []
+    largest_rsvecs_adv = []
+    largest_svals_fdbk = []
+    largest_rsvecs_fdbk = []
+    gl_speeds = []
+    gl_fluxs = []
+   
+    u = u_init.copy()
+    h = h_init.copy()
+    for i in range(n_timesteps):
+        print(i)
+        u, h, res = iteratorr(u, h)
+        #print(dx/jnp.max(u))
+        us.append(u)
+        hs.append(h)
+            
+        
+        s_gnd = h + b
+        s_flt = h*(1-rho/rho_w)
+        ffi = np.where(s_gnd<s_flt)[0][0]
+
+        gl_speeds.append(u[ffi-1])
+        gl_fluxs.append(h[ffi-1]*u[ffi-1])
+
+        mask = jnp.where(s_gnd>s_flt, 1, 0)
+        mask = jnp.outer(mask, mask)
+
+        
+        L, fdbk, L_adv = construct_tlo(u, h, C, B_larger, accumulation, 0)
+        
+        L_cr = L * mask / (h[ffi-1]*u[ffi-1])
+
+        
+        #evals, evecs = jnp.linalg.eig(L)
+        #order_indices = jnp.argsort(evals)
+        #evals_ord = evals[order_indices]
+        #evecs_ord = evecs[:, order_indices]
+    
+        lsvecs, svals, rsvecs_t = jnp.linalg.svd(fdbk*mask)
+        order_indices = jnp.argsort(svals)
+        svals_ord = svals[order_indices]
+        rsvecs_ord = jnp.transpose(rsvecs_t)[:, order_indices]
+        largest_svals.append(svals_ord[-1])
+    
+        #lsvecs_L_adv, svals_L_adv, rsvecs_t_L_adv = jnp.linalg.svd(L_adv)
+        #order_indices_L_adv = jnp.argsort(svals_L_adv)
+        #svals_ord_L_adv = svals_L_adv[order_indices_L_adv]
+        #rsvecs_ord_L_adv = jnp.transpose(rsvecs_t_L_adv)[:, order_indices_L_adv]
+    
+        #lsvecs_fdbk, svals_fdbk, rsvecs_t_fdbk = jnp.linalg.svd(fdbk_cr)
+        #order_indices_fdbk = jnp.argsort(svals_fdbk)
+        #svals_ord_fdbk = svals_fdbk[order_indices_fdbk]
+        #rsvecs_ord_fdbk = jnp.transpose(rsvecs_t_fdbk)[:, order_indices_fdbk]
+    
+    plt.plot(largest_svals)
+    plt.show()
+
+    plt.plot(gl_speeds)
+    plt.show()
+
+    plt.plot(gl_fluxs)
+    plt.show()
+
+    plotboths(hs, us, n_timesteps)
+
+#svs_dynamic_test()
+#raise
+    
+
+
+
+
+
+
+
+
+
+
+
 #####Testing implicit coupled picard solver
-n_its = 60
-#dt = 5e8
-
-n_timesteps = 400
-
-dt = 5e8
 
 #dt = 1e8
 #iteratorr = make_picard_iterator_for_joint_impl_problem(C, n_its, dt, 0)
 
-u = u_trial.copy()
-h = h_trial.copy()
 
-leading_evals = []
-final_hs = []
-for k in range(2):
+def initialise():
 
-    A = A*(1-0.99*k/2)
-    B = 2 * (A**(-1/3))
-
-    iteratorr = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B, n_its, dt, 0)
-
+    u = u_trial.copy()
+    h = h_trial.copy()
+    
+    leading_evals = []
+    final_hs = []
+    
+    
+    #initialising the thing definitely in steady state:
+    dt_initial = 1e10
+    ints_init = 30
+    iteratorr = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B, ints_init, dt_initial, 0)
+    initial_n_timesteps = 800
+    
+    u = u_trial.copy()
+    h = h_trial.copy()
+    
     uends = []
     hends = []
-    for i in range(n_timesteps):
+    for i in range(initial_n_timesteps):
         print(i)
         u, h, res = iteratorr(u, h)
         #print(dx/jnp.max(u))
         uends.append(u)
         hends.append(h)
     
-    #jnp.save("./u_ss_2_1000cells.npy", u)
-    #jnp.save("./h_ss_2_1000cells.npy", h)
-    #plotboths(hends, uends, n_timesteps)
+    jnp.save("./overdeepening_misc/u_ss_100cells.npy", u)
+    jnp.save("./overdeepening_misc/h_ss_100cells.npy", h)
+    plotboths(hends, uends, initial_n_timesteps)
+
+#initialise()
+#raise
+
+
+#Now changing A and doing continuation stuff.
+
+n_its = 30
+#dt = 5e8
+n_timesteps = 40
+
+dt = 5e9
+
+
+#u_init = jnp.load("./overdeepening_misc/u_ss_1000cells.npy")
+#h_init = jnp.load("./overdeepening_misc/h_ss_1000cells.npy")
+
+u_init = u_trial.copy()
+h_init = h_trial.copy()
+
+
+A_loop = 1e-26
+
+n_different_As = 10
+
+u = u_init.copy()
+h = h_init.copy()
+
+leading_evals = []
+final_hs = []
+
+for k in range(n_different_As):
+
+    #A_loop = A*(1+99*k/n_different_As)
+    A_loop = A*(1+99*k/200)
+    B_loop = 2 * (A_loop**(-1/3))
+
+    print("-------------")
+    print(A_loop)
+
+    #iteratorr = make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_loop, n_its, dt, 0)
+
+    #uends = []
+    #hends = []
+    #for i in range(n_timesteps):
+    #    print(i)
+    #    u, h, res = iteratorr(u, h)
+    #    #print(dx/jnp.max(u))
+    #    uends.append(u)
+    #    hends.append(h)
     
+    #jnp.save("./overdeepening_misc/continuation/u_ss_200cells_A_{}.npy".format(A_loop), u)
+    #jnp.save("./overdeepening_misc/continuation/h_ss_200cells_A_{}.npy".format(A_loop), h)
+    #plotboths(hends, uends, n_timesteps)
+   
+    u = jnp.load("./overdeepening_misc/continuation/u_ss_1000cells_A_{}.npy".format(A_loop))
+    h = jnp.load("./overdeepening_misc/continuation/h_ss_1000cells_A_{}.npy".format(A_loop))
+
+    s_gnd = h + b
+    s_flt = h*(1-rho/rho_w)
+    ffi = np.where(s_gnd<s_flt)[0][0]
+    mask = jnp.where(s_gnd>s_flt, 1, 0)
+    mask = jnp.outer(mask, mask)
+
     #u = jnp.load("./u_ss_2_1000cells.npy")
     #h = jnp.load("./h_ss_2_1000cells.npy")
     #
-    L, fbk, ad = construct_tlo(u, h, C, accumulation, 0)
     
+    #L, fbk, ad = construct_tlo(u, h, C, B_loop, accumulation, 0)
+   
+    #L = L/jnp.max(u)
+
+    #L = construct_full_jacobian(u, h, C, B_loop, accumulation, 0)
+    L = construct_full_full_jacobian(u, h, C, B_loop, accumulation, 0, dt)
+
     evals, evecs = jnp.linalg.eig(L)
     order_indices = jnp.argsort(evals)
     evals_ord = evals[order_indices]
     evecs_ord = evecs[:, order_indices]
     
+    #evals, evecs = jnp.linalg.eig(L*mask)
+    #order_indices = jnp.argsort(evals)
+    #evals_ord = evals[order_indices][:(ffi)]
+    #evecs_ord = evecs[:, order_indices][:,:ffi]
+    #print(evals_ord[-1])
+   
+    if jnp.isnan(evals[-1]):
+        break
+
     #plt.imshow(jnp.rot90(jnp.real(evecs_ord)), vmin=-0.1, vmax=0.1, cmap="RdBu_r")
     #plt.show()
     #raise
@@ -1054,13 +1413,13 @@ for k in range(2):
     #plt.plot(evals_ord)
     #plt.show()
 
-    leading_evals.append(evals[-1])
+    leading_evals.append(evals_ord[-1])
     final_hs.append(h)
 
 plt.plot(leading_evals)
 plt.show()
 
-plotgeoms(final_hs, 10)
+plotgeoms(final_hs, n_different_As)
 raise
 
 

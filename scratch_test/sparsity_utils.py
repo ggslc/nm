@@ -6,8 +6,6 @@ import scipy
 #TODO: function for translating stencil into set of basis vectors
 
 
-<<<<<<< HEAD
-=======
 def dodgy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
 
     a = scipy.sparse.coo_array((values, (coordinates[:,0], coordinates[:,1])), shape=shape).tocsr()
@@ -122,8 +120,6 @@ def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
 
     return sparse_jacrev, densify_sparse_jac
 
->>>>>>> experimental
-
 def create_repeated_array(base_array, n):
     repetitions = int(jnp.ceil(n / len(base_array)))
 
@@ -132,9 +128,6 @@ def create_repeated_array(base_array, n):
     return repeated_array[:n], repetitions
 
 
-<<<<<<< HEAD
-def basis_vectors_etc(case_=1):
-=======
 def basis_vectors_etc_nonsquare(nr, nc, case_=1, fill_from_left=True, fill_from_top=True):
     """
     create basis vectors with which to carry out jacobian-vector products and
@@ -319,7 +312,6 @@ def basis_vectors_etc_nonsquare(nr, nc, case_=1, fill_from_left=True, fill_from_
 
 
 def basis_vectors_etc(n, case_=1):
->>>>>>> experimental
     """
     create basis vectors with which to carry out jacobian-vector products and
     sets of coordinates mapping the corresponding jvps to the dense jacobian.
