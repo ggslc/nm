@@ -227,6 +227,37 @@ def make_picard_iterator_for_u(C, iterations):
        
     return iterator
 
+def make_adv_res_ss(accumulation):
+    
+    def adv_res(u, h, basal_melt_rate):
+        s_gnd = h + b
+        s_flt = h*(1-rho/rho_w)
+
+        acc = jnp.where(s_gnd<s_flt, accumulation-basal_melt_rate, accumulation)
+        acc = acc.at[:].set(jnp.where(h>0, acc, 0))
+
+        h_face = jnp.zeros((n+1,))
+        h_face = h_face.at[1:n+1].set(h[:n]) #upwind values
+        h_face = h_face.at[0].set(h[0].copy())
+
+        u_face = jnp.zeros((n+1,))
+        u_face = u_face.at[1:n].set(0.5*(u[1:n]+u[:n-1]))
+        u_face = u_face.at[-1].set(2*u[-1] - u[-2]) #extrapolating u (linear)
+
+        h_flux = h_face * u_face
+        #the two lines below were supposed to stop everything piling up in the last
+        #cell but they had the opposite effect for some reason...
+        #h_flux = h_flux.at[-2].set(h_flux[-3]) #stop everythin piling up at the end.
+        #NOTE: This changes things a lot:
+        #h_flux = h_flux.at[-1].set(h_flux[-2].copy())
+        h_flux = h_flux.at[0].set(0)
+
+
+        #return  (h - h_old)/dt - ( h_flux[1:(n+1)] - h_flux[:n] )/dx - acc
+        #I think the above is a sign error in the flux!
+        return  ( h_flux[1:(n+1)] - h_flux[:n] ) - dx*acc
+
+    return adv_res    
 
 def make_adv_residual(dt, accumulation):
     
@@ -259,6 +290,83 @@ def make_adv_residual(dt, accumulation):
         return  (h - h_old)*dx + dt*( h_flux[1:(n+1)] - h_flux[:n] ) - dt*dx*acc
 
     return adv_res    
+
+def quasi_newton_steady_state_solver(C, B_int, iterations, bmr):
+    
+    mom_res = make_linear_momentum_residual_osd_at_gl()
+    adv_res = make_adv_res_ss(accumulation)
+
+    jac_mom_res_fn = jacfwd(mom_res, argnums=(0,1))
+    jac_adv_res_fn = jacfwd(adv_res, argnums=(0,1))
+    
+    def new_mu(u):
+    
+        dudx = jnp.zeros((n+1,))
+        dudx = dudx.at[1:-1].set((u[1:] - u[:-1])/dx)
+        dudx = dudx.at[-1].set(dudx[-2])
+        #set reflection boundary condition
+        dudx = dudx.at[0].set(2*u[0]/dx)
+    
+        mu_nl = B_int * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
+
+        #mu_nl = B * (epsilon_visc**(-2/3))
+
+        return mu_nl
+
+    def new_beta(u, h):
+
+        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
+
+        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
+        beta = C * (1/(jnp.abs(u)**(2/3) + (1e-8)**(2/3))) * grounded_mask
+        #beta = C * (1e-6)**(-2/3) * grounded_mask
+
+        return beta
+
+    def continue_condition(state):
+        _,_,_, i,res,resrat = state
+        return i<iterations
+
+
+    def step(state):
+        u, h, h_init, i, prev_res, prev_resrat = state
+
+        beta = new_beta(u, h)
+        mu = new_mu(u)
+
+        jac_mom_res = jac_mom_res_fn(u, h, mu, beta)
+        jac_adv_res = jac_adv_res_fn(u, h, bmr)
+
+        full_jacobian = jnp.block(
+                                  [ [jac_mom_res[0], jac_mom_res[1]],
+                                    [jac_adv_res[0], jac_adv_res[1]] ]
+                                  )
+    
+        rhs = jnp.concatenate((-mom_res(u, h, mu, beta), -adv_res(u, h, bmr)))
+    
+        dvar = lalg.solve(full_jacobian, rhs)
+    
+        u = u.at[:].set(u+dvar[:n])
+        h = h.at[:].set(h+dvar[n:])
+
+        #TODO: add one for the adv residual too...
+        res = jnp.max(jnp.abs(mom_res(u, h, mu, beta))) 
+
+        return u, h, h_init, i+1, res, prev_res/res
+
+    def iterator(u_init, h_init):    
+
+        resrat = np.inf
+        res = np.inf
+
+        initial_state = u_init, h_init, h_init, 0, res, resrat
+
+        u, h, h_init, itn, res, resrat = jax.lax.while_loop(continue_condition, step, initial_state)
+
+        return u, h, res
+       
+    return iterator
+
 
 def make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_int, iterations, dt, bmr):
     
@@ -1033,6 +1141,32 @@ h_trial = h_init.copy()
 #
 #
 #raise
+
+
+
+########TESTING STEADY STATE SOLVER################
+
+
+
+
+A_init = 5e-26
+B_init = 2 * (A_init**(-2/3))
+
+u_init = u_trial.copy()
+h_init = h_trial.copy()
+
+
+ss_solver = quasi_newton_steady_state_solver(C, B_init, 1, 0)
+
+u_end, h_end, _ = ss_solver(u_init, h_init)
+
+plotboth(h_end, u_end)
+
+
+
+
+raise
+
 
 
 
