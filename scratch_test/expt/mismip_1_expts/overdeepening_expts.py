@@ -439,6 +439,7 @@ def make_picard_iterator_for_joint_impl_problem_alt_compiled(C, B_int, iteration
         return u, h, h_init, i+1, res, prev_res/res
 
 
+    @jax.jit
     def iterator(u_init, h_init):    
 
         resrat = np.inf
