@@ -1,4 +1,11 @@
 from pathlib import Path
+import sys
+
+
+sys.path.insert(1, "../../../utils/")
+from plotting_stuff import *
+
+
 
 from PIL import Image
 
@@ -32,14 +39,77 @@ def interp_mu_onto_centres(mu_face):
     return mu_centre
 
 
+def make_linear_momentum_residual_mu_face():
+    #one-sided differences at the grounding line!
+
+    def mom_res(u, h, mu_face, beta):
+
+        s_gnd = h + b #b is globally defined
+        s_flt = h*(1-rho/rho_w)
+        s = jnp.maximum(s_gnd, s_flt)
+        
+        is_floating = s_flt > s_gnd
+        ffci = jnp.where(jnp.any(is_floating), jnp.argmax(is_floating), n)
+
+
+        dudx = jnp.zeros((n+1,))
+        dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
+        #dudx = dudx.at[-2].set(dudx[-3])
+        dudx = dudx.at[-1].set(0)
+        ##set (or 'use' I guess) reflection boundary condition
+        dudx = dudx.at[0].set(2*u[0]/dx)
+
+
+        sliding = beta * u * dx
+        #making sure the Jacobian is full rank!
+        sliding = sliding.at[:].set(jnp.where(h>0, jnp.where(s_gnd>s_flt, sliding, 0), u * dx))
+
+        
+        h_face = jnp.zeros((n+1,))
+        h_face = h_face.at[1:n].set(0.5 * (h[1:n] + h[:n-1]))
+        h_face = h_face.at[-1].set(0)
+        h_face = h_face.at[0].set(h[0])
+
+
+        flux = h_face * mu_face * dudx
+
+
+        h_grad_s = jnp.zeros((n,))
+        h_grad_s = h_grad_s.at[1:n-1].set(h[1:n-1] * 0.5 * (s[2:n] - s[:n-2]))
+        h_grad_s = h_grad_s.at[-1].set(-h[-1] * 0.5 * s[-2])
+        #h_grad_s = h_grad_s.at[-2].set(-0.1)
+        h_grad_s = h_grad_s.at[0].set(h[0] * 0.5 * (s[1] - s[0]))
+      
+        #one-sided differences at gl
+        h_grad_s = h_grad_s.at[ffci].set(h[ffci] * (s[ffci+1] - s[ffci]))
+        h_grad_s = h_grad_s.at[ffci-1].set(h[ffci-1] * (s[ffci-1] - s[ffci-2]))
+     
+        #scale
+        h_grad_s = rho * g * h_grad_s
+
+        #print(flux)
+        #print(sliding)
+        #print(h_grad_s)
+
+        #plt.plot(-h_grad_s)
+        #plt.plot(sliding)
+        #plt.plot(flux)
+        #plt.show()
+        
+        return flux[1:] - flux[:-1] - h_grad_s - sliding
+        #return - h_grad_s - sliding
+        #return flux[1:] - flux[:-1] - sliding
+
+    return mom_res
+
 def make_linear_momentum_residual():
     #one-sided differences at the grounding line!
 
-    def mom_res(u, h, mu_centre, beta, b):
+    def mom_res(u, h, mu_centre, beta):
 
         mu_face = interp_mu_onto_faces(mu_centre)
 
-        s_gnd = h + b
+        s_gnd = h + b #b is globally defined
         s_flt = h*(1-rho/rho_w)
         s = jnp.maximum(s_gnd, s_flt)
         
@@ -139,15 +209,21 @@ def define_z_coordinates(n_levels, thk):
     surface = jnp.maximum(s_gnd, s_flt)
     base = surface-thk
 
+    base = jnp.maximum(base, b) #just to make sure
 
     v_coords_1d = jnp.linspace(0,1,n_levels)**3
     #v_coords_3d = jnp.broadcast_to(v_coords_1d, (base.shape[0], base.shape[1], n_levels))
-    v_coords_expanded = v_coords_1d[None, :]
-    base_expanded = base[:,None]
-    surface_expanded = surface[:,None]
-    z_coords_2d = base_expanded + (surface_expanded-base_expanded)*v_coords_expanded
-    v_coords_2d = base_expanded*0 + v_coords_expanded
-    return v_coords_2d, z_coords_2d
+    
+    v_coords_expanded = v_coords_1d[None, :] 
+    #The ellipses are moot because this wouldn't work for 3d - it would have to be [None, None, :]
+   
+    base_expanded = base[:, None]
+    thk_expanded = thk[:, None]
+
+    z_coords_2d = base_expanded + thk_expanded*v_coords_expanded
+    #v_coords_2d = base_expanded*0 + vdd_coords_expanded
+    #return v_coords_2d, z_coords_2d
+    return z_coords_2d
 
 
 #unfortunately, it seems that np and jnp in-built trapz only take scalar dz.
@@ -178,7 +254,7 @@ def vertically_average(field, z_coords):
 
 
 
-def make_mom_solver(iterations, rheology_n=3, compile_=False):
+def make_mom_solver_diva(iterations, rheology_n=3, compile_=False):
 
     mom_res = make_linear_momentum_residual()
 
@@ -200,7 +276,8 @@ def make_mom_solver(iterations, rheology_n=3, compile_=False):
         dudx = dudx.at[0].set(0.5 * (u_va[1]+u_va[0]) / dx) #reflection bc, remember
         dudx = dudx.at[-1].set(dudx[-2])
     
-        mu_vv = 0.5 * B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc)**(0.5*(1 - 1/rheology_n))
+        #mu_vv = 0.5 * B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc)**(0.5*(1/rheology_n - 1))
+        mu_vv = B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc)**(0.5*(1/rheology_n - 1))
         
         mu_va = vertically_average(mu_vv, zs)
 
@@ -221,12 +298,37 @@ def make_mom_solver(iterations, rheology_n=3, compile_=False):
             return fm
 
 
+    
+    def new_beta(u_base, zs):
+        h = zs[...,-1] - zs[...,0]
+        
+        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
+
+        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
+        beta = C * (1/(jnp.abs(u_base)**(2/3) + (1e-8)**(2/3))) * grounded_mask
+
+        return beta
+
+
     #f2 = arthern_function(mu_vv, zs, 2)
     #equation 5
-    def new_beta_eff(beta, f2):
+    def new_beta_eff(u_base, f2, zs):
+
+        h = zs[...,-1] - zs[...,0]
+        
+        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
+
+        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
+        beta = C * (1/(jnp.abs(u_base)**(2/3) + (1e-8)**(2/3))) * grounded_mask
+
+        #jax.debug.print("f2: {}", f2)
+        #jax.debug.print("beta factor: {}", (1 / (1 + beta*f2)))
 
         beta_eff = beta / (1 + beta*f2)
 
+        #jax.debug.print("beta: {}", beta)
+        #jax.debug.print("beta_eff: {}", beta_eff)
+        
         return beta_eff
 
 
@@ -252,25 +354,25 @@ def make_mom_solver(iterations, rheology_n=3, compile_=False):
 
         f2 = arthern_function(mu_vv, zs, m=2)
 
-        prefactor_exp = ( (u_va / (1 + beta*f2)) + (beta_eff * u_va / (zs[...,-1]-zs[...,0]) ) )[...,None]
+        pre_add = (u_va / (1 + beta*f2))[...,None] 
+        prefactor_exp = (beta_eff * u_va)[...,None]
 
-        u_vv = prefactor_exp * f1_vv
+        u_vv = pre_add + prefactor_exp * f1_vv
 
         return u_vv
 
 
     #equation 3
     def setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs):
-        b = zs[...,0]
-        h = zs[...,-1]-b
+        h = zs[...,-1]-zs[...,0]
 
-        jac_mom_res = jac_mom_res_fn(u_va, h, mu_va, beta_eff, b)
+        jac_mom_res = jac_mom_res_fn(u_va, h, mu_va, beta_eff)
 
-        delta_u = lalg.solve(jac_mom_res, -mom_res(u_va, h, mu_va, beta_eff, b))
+        delta_u = lalg.solve(jac_mom_res, -mom_res(u_va, h, mu_va, beta_eff))
 
         u_va = u_va + delta_u
 
-        residual = jnp.max(jnp.abs(mom_res(u_va, h, mu_va, beta_eff, b)))
+        residual = jnp.max(jnp.abs(mom_res(u_va, h, mu_va, beta_eff)))
 
         return u_va, residual
 
@@ -280,28 +382,41 @@ def make_mom_solver(iterations, rheology_n=3, compile_=False):
         
         u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
 
+        dudz = jnp.zeros_like(dudz)
+        #beta_eff = beta.copy()
+
         #update viscosity
         mu_vv, mu_va = new_viscosity(u_va, dudz, zs)
 
         #update beta_eff
-        f2 = arthern_function(mu_vv, zs, m=2)
-        beta_eff = new_beta_eff(beta, f2)
+        f2 = jax.lax.cond(i>0,
+                        lambda _: arthern_function(mu_vv, zs, m=2),
+                        lambda _: jnp.zeros_like(u_va),
+                        operand=None)
+        #beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
+        #beta_eff = new_beta(u_va, zs)
+        beta_eff = new_beta(u_vv[...,0], zs)
 
         #solve linear problem
         u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
         resrat = res/residual
 
-        jax.debug.print("res: {}", residual)
-        jax.debug.print("resrat: {}", resrat)
-
         #update dudz
-        dudz = new_dudz(mu_vv, u_va, beta_eff, zs)
+        #dudz = new_dudz(mu_vv, u_va, beta_eff, zs)
 
         #update u_vv
-        u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs, mu_vv, f2)
+        #u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs, mu_vv, f2)
+        u_vv = jnp.zeros_like(mu_vv) + mu_va[...,None]
+
+        #jax.debug.print("res: {}", residual)
+        #jax.debug.print("resrat: {}", resrat)
+        
+        jax.debug.print("u_va: {}", u_va)
+        ##jax.debug.print("u_vv: {}", u_vv)
+        jax.debug.print("u_va from vi of u_vv: {}", vertically_average(u_vv, zs))
 
 
-        return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, res, resrat
+        return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
 
 
     def continue_condition(state):
@@ -314,10 +429,11 @@ def make_mom_solver(iterations, rheology_n=3, compile_=False):
         residual_ratio = jnp.inf
         residual = 1
 
-        beta_init = C
 
         dummy_small = jnp.zeros_like(u_va_init)
         dummy_large = jnp.zeros_like(dudz_init)
+        
+        beta_init = dummy_small
 
         initial_state = u_va_init, dummy_large, dummy_small, dummy_large,\
                         dudz_init, beta_init, dummy_small, zs, 0, residual, residual_ratio
@@ -329,6 +445,102 @@ def make_mom_solver(iterations, rheology_n=3, compile_=False):
 
     return iterator
 
+
+
+def make_mom_solver_ssa(iterations, rheology_n=3, compile_=False):
+
+
+    #mom_res = make_linear_momentum_residual_mu_face()
+    mom_res = make_linear_momentum_residual()
+    
+    jac_mom_res_fn = jacfwd(mom_res, argnums=0)
+
+
+    def new_viscosity(u):
+        
+        #dudx = jnp.zeros((n+1,))
+        #dudx = dudx.at[1:-1].set((u[1:] - u[:-1])/dx)
+        #dudx = dudx.at[-1].set(dudx[-2])
+        ##set reflection boundary condition
+        #dudx = dudx.at[0].set(2*u[0]/dx)
+    
+        #mu_va = B * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
+
+        #If cell-centred
+        dudx = jnp.zeros_like(u)
+        dudx = dudx.at[1:-1].set(0.5 * (u[2:] - u[:-2]) / dx)
+        dudx = dudx.at[0].set(0.5 * (u[1]+u[0]) / dx) #reflection bc, remember
+        dudx = dudx.at[-1].set(dudx[-2])
+    
+        mu_va = B * (jnp.abs(dudx) + epsilon_visc)**(-2/3)
+
+        return mu_va
+
+
+    #just keeping this here to make it look more like the diva solver
+    def new_beta_eff(u, h):
+        
+        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
+
+        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
+        beta = C * (1/(jnp.abs(u)**(2/3) + (1e-8)**(2/3))) * grounded_mask
+
+        return beta
+
+
+    def setup_and_solve_linear_prob(u_va, mu_va, beta_eff, h):
+
+        jac_mom_res = jac_mom_res_fn(u_va, h, mu_va, beta_eff)
+
+        delta_u = lalg.solve(jac_mom_res, -mom_res(u_va, h, mu_va, beta_eff))
+
+        u_va = u_va + delta_u
+
+        residual = jnp.max(jnp.abs(mom_res(u_va, h, mu_va, beta_eff)))
+
+        return u_va, residual
+
+
+    def step(state):
+        
+        u_va, mu_va, beta, h, i, res, resrat = state
+
+        #update viscosity
+        mu_va = new_viscosity(u_va)
+
+        #update beta_eff
+        beta = new_beta_eff(u_va, h)
+
+        #solve linear problem
+        u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta, h)
+        resrat = res/residual
+
+        jax.debug.print("res: {}", residual)
+        jax.debug.print("resrat: {}", resrat)
+
+        return u_va, mu_va, beta, h, i+1, residual, resrat
+
+
+    def continue_condition(state):
+        _,_,_,_, i ,_,_ = state
+        return i<iterations
+
+
+    def iterator(u_va_init, h):
+        
+        residual_ratio = jnp.inf
+        residual = 1
+        
+        dummy_small  = jnp.zeros((n,))
+        dummy_medium = jnp.zeros((n+1,))
+
+        initial_state = u_va_init, dummy_small, dummy_small, h, 0, residual, residual_ratio
+
+        out_state = jax.lax.while_loop(continue_condition, step, initial_state)
+
+        return out_state
+
+    return iterator
 
 
 def make_joint_qn_solver(C, B, iterations, dt, acc=0, compile_=False):
@@ -448,8 +660,8 @@ epsilon_visc = 3e-11
 
 
 #b = 720 - 778.5*x/750_000
-#b = 729 - 2184.8*(x/750_000)**2 + 1031.72*(x/750_000)**4 - 151.72*(x/750_000)**6
 b = 729 - 2184.8*(x/750_000)**2 + 1031.72*(x/750_000)**4 - 151.72*(x/750_000)**6
+#b = 729 - 2184.8*(x/750_000)**2 + 1031.72*(x/750_000)**4 - 151.72*(x/750_000)**6
 
 x_s = x/l
 #h_init = jnp.zeros_like(x)+100
@@ -462,18 +674,44 @@ h_trial = h_init.copy()
 
 
 
-n_levels = 11
+n_levels = 51
 
-_, z_coordinates = define_z_coordinates(n_levels, h_trial)
+z_coordinates = define_z_coordinates(n_levels, h_trial)
 
-n_iterations = 25
-mom_solver = make_mom_solver(n_iterations)
+
+#plt.figure()
+#for i in range(z_coordinates.shape[-1]):
+#    plt.plot(z_coordinates[...,i])
+#plt.show()
+##plotgeoms([z_coordinates[...,i] for i in range(z_coordinates.shape[-1])], b, z_coordinates.shape[-1])
+#raise
+
+
+
+
+##SSA:
+#n_iterations = 30
+#mom_solver = make_mom_solver_ssa(n_iterations)
+#
+#u_va_end, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
+#
+#plotboth(h_trial, b, u_va_end)
+#
+#raise
+
+#DIVA:
+n_iterations = 5
+mom_solver = make_mom_solver_diva(n_iterations)
 
 
 u_va_init = u_trial
 dudz_init = jnp.zeros((n,n_levels))
 
 u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+
+plotboth(h_trial, b, u_va)
+
+raise
 
 plt.plot(u_va)
 plt.show()
