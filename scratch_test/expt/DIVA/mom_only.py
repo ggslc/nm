@@ -250,11 +250,17 @@ def vertically_average(field, z_coords):
 
     v_int = vertically_integrate(field, z_coords)
 
-    return v_int/(hs+1e-10)
+    v_avg = v_int/(hs+1e-10)
+
+    ##jax.debug.print("{}",((v_avg-field[...,-5])/v_avg))
+    #jax.debug.print("field: {}",field)
+    #jax.debug.print("vertical average: {}",v_avg)
+
+    return v_avg
 
 
 
-def make_mom_solver_diva(iterations, rheology_n=3, compile_=False):
+def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
     mom_res = make_linear_momentum_residual()
 
@@ -277,7 +283,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, compile_=False):
         dudx = dudx.at[-1].set(dudx[-2])
     
         #mu_vv = 0.5 * B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc)**(0.5*(1/rheology_n - 1))
-        mu_vv = B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc)**(0.5*(1/rheology_n - 1))
+        mu_vv = B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc**2)**(0.5*(1/rheology_n - 1))
         
         mu_va = vertically_average(mu_vv, zs)
 
@@ -377,24 +383,17 @@ def make_mom_solver_diva(iterations, rheology_n=3, compile_=False):
         return u_va, residual
 
 
-
-    def step(state):
-        
+    def step_ssa(state):
         u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
 
         dudz = jnp.zeros_like(dudz)
-        #beta_eff = beta.copy()
 
         #update viscosity
         mu_vv, mu_va = new_viscosity(u_va, dudz, zs)
+        
+        jax.debug.print("{}",mu_va)
 
         #update beta_eff
-        f2 = jax.lax.cond(i>0,
-                        lambda _: arthern_function(mu_vv, zs, m=2),
-                        lambda _: jnp.zeros_like(u_va),
-                        operand=None)
-        #beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
-        #beta_eff = new_beta(u_va, zs)
         beta_eff = new_beta(u_vv[...,0], zs)
 
         #solve linear problem
@@ -406,14 +405,54 @@ def make_mom_solver_diva(iterations, rheology_n=3, compile_=False):
 
         #update u_vv
         #u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs, mu_vv, f2)
-        u_vv = jnp.zeros_like(mu_vv) + mu_va[...,None]
+        u_vv = jnp.zeros_like(u_vv) + u_va[...,None]
 
         #jax.debug.print("res: {}", residual)
         #jax.debug.print("resrat: {}", resrat)
         
-        jax.debug.print("u_va: {}", u_va)
+#        jax.debug.print("u_va: {}", u_va)
+#        ##jax.debug.print("u_vv: {}", u_vv)
+#        jax.debug.print("u_va from vi of u_vv: {}", vertically_average(u_vv, zs))
+
+        return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
+
+
+    def step(state):
+        
+        u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
+
+        #update viscosity
+        mu_vv, mu_va = new_viscosity(u_va, dudz, zs)
+
+        #update beta_eff
+        #f2 = jax.lax.cond(i>0,
+        #                lambda _: arthern_function(mu_vv, zs, m=2),
+        #                lambda _: jnp.zeros_like(u_va),
+        #                operand=None)
+        f2 = arthern_function(mu_vv, zs, m=2)
+        beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
+
+        #solve linear problem
+        u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
+        resrat = res/residual
+
+        #update dudz
+        dudz = new_dudz(mu_vv, u_va, beta_eff, zs)
+        jax.debug.print("dudz: {}", dudz[...,1])
+
+        #update u_vv
+        u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs, mu_vv, f2)
+        #NOTE: Something's going quite wrong as u_vv inconsistent with u_va (i.e.
+        #avg of u_vv not the same as u_va...)
+
+        #jax.debug.print("res: {}", residual)
+        #jax.debug.print("resrat: {}", resrat)
+        
+        #jax.debug.print("u_va: {}", u_va)
         ##jax.debug.print("u_vv: {}", u_vv)
-        jax.debug.print("u_va from vi of u_vv: {}", vertically_average(u_vv, zs))
+        #jax.debug.print("u_va from vi of u_vv: {}", vertically_average(u_vv, zs))
+
+        #jax.debug.print("u_va error: {}", (u_va-vertically_average(u_vv, zs))/u_va)
 
 
         return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
@@ -434,13 +473,25 @@ def make_mom_solver_diva(iterations, rheology_n=3, compile_=False):
         dummy_large = jnp.zeros_like(dudz_init)
         
         beta_init = dummy_small
+        u_vv_init = dummy_large + u_va_init[...,None]
 
-        initial_state = u_va_init, dummy_large, dummy_small, dummy_large,\
+        initial_state = u_va_init, u_vv_init, dummy_small, dummy_large,\
                         dudz_init, beta_init, dummy_small, zs, 0, residual, residual_ratio
 
         #u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, residual, residual_ratio
-        out_state = jax.lax.while_loop(continue_condition, step, initial_state)
 
+        if mode=="DIVA":
+            internal_step = step
+        elif mode=="SSA":
+            internal_step = step_ssa
+        else:
+            print("Invalid mode given, defaulting to DIVA")
+            internal_step = step
+
+
+        out_state = jax.lax.while_loop(continue_condition, step, initial_state)
+        #out_state = jax.lax.while_loop(continue_condition, step_ssa, initial_state)
+        
         return out_state
 
     return iterator
@@ -507,6 +558,8 @@ def make_mom_solver_ssa(iterations, rheology_n=3, compile_=False):
 
         #update viscosity
         mu_va = new_viscosity(u_va)
+        
+        jax.debug.print("{}",mu_va)
 
         #update beta_eff
         beta = new_beta_eff(u_va, h)
@@ -647,7 +700,6 @@ accumulation = jnp.zeros_like(x)+0.3/(3.15e7)
 
 
 C = 7.624e6
-#C = 7.624e5
 
 #A = 4.6146e-24
 A = 5e-26
@@ -690,7 +742,7 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 
 
 ##SSA:
-#n_iterations = 30
+#n_iterations = 5
 #mom_solver = make_mom_solver_ssa(n_iterations)
 #
 #u_va_end, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
@@ -700,7 +752,7 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 #raise
 
 #DIVA:
-n_iterations = 5
+n_iterations = 15
 mom_solver = make_mom_solver_diva(n_iterations)
 
 
@@ -708,6 +760,54 @@ u_va_init = u_trial
 dudz_init = jnp.zeros((n,n_levels))
 
 u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+
+
+
+mom_solver_ssa = make_mom_solver_diva(n_iterations, mode="SSA")
+u_va_ssa,_,_,_,_,_,_,_,_,_,_ = mom_solver_ssa(u_va_init, dudz_init, z_coordinates)
+
+
+
+
+
+###########PLOTTING STUFF:
+
+
+#percentage_diff_from_vert_mean = (100/u_va[...,None])*(u_vv-u_va[...,None])
+va_alt = vertically_average(u_vv, z_coordinates)
+#percentage_diff_from_vert_mean = (100/va_alt[...,None])*(u_vv-va_alt[...,None])
+
+#print(np.array2string(np.array(100*(va_alt-u_va)/u_va), formatter={'float_kind': lambda x: f"{x:.2f}"}))
+#raise
+
+
+X, Z = np.meshgrid(x, np.arange(n_levels), indexing='ij')  # (n, 11)
+
+# Replace Z with the actual z_coords from your data
+Z = z_coordinates  # shape (n, 11)
+
+
+percentage_diff_from_ssa = (100/u_va_ssa[...,None])*(u_vv-u_va_ssa[...,None])
+
+
+#plt.figure(figsize=(8, 4))
+#contour = plt.contourf(X, Z, u_vv*3.15e7, levels=10001, cmap='RdYlBu_r', vmin=0, vmax=5e2)
+#plt.colorbar(contour, label='Speed (m/y)')
+#plt.ylabel('Elevation (m)')
+#plt.show()
+
+
+# Plot difference in vert profile from mean
+plt.figure(figsize=(8, 4))
+#contour = plt.contourf(X, Z, percentage_diff_from_vert_mean, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
+contour = plt.contourf(X, Z, percentage_diff_from_ssa, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
+#plt.colorbar(contour, label='Percentage diff from vert avg')
+plt.colorbar(contour, label='Percentage diff from SSA solution')
+plt.ylabel('Elevation (m)')
+plt.show()
+
+
+
 
 plotboth(h_trial, b, u_va)
 
