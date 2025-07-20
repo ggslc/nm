@@ -172,11 +172,11 @@ def make_linear_momentum_residual():
 
 def make_adv_residual(dt, accumulation):
     
-    def adv_res(u, h, h_old, basal_melt_rate):
+    def adv_res(u, h, h_old):
         s_gnd = h + b
         s_flt = h*(1-rho/rho_w)
 
-        acc = jnp.where(s_gnd<s_flt, accumulation-basal_melt_rate, accumulation)
+        acc = jnp.where(s_gnd<s_flt, accumulation, accumulation)
         acc = acc.at[:].set(jnp.where(h>0, acc, 0))
 
         h_face = jnp.zeros((n+1,))
@@ -261,13 +261,13 @@ def vertically_average(field, z_coords):
     return v_avg
 
 
-def interp_field_onto_new_zs(field, z, z_new):
+def interp_field_onto_new_zs(field, zs, zs_new):
     #Note: the in_axes at the bottom makes this specific to 2d arrays
     #to make it more general, let's just flatten the arrays and then un-flatten
-    #them again (rather than nesting vmaps).
+    #them again (rather than nesting vmaps... which gets confusing).
 
     def interp_single_point(field_i, zs_i, zs_i_new):
-        indices_hi = jnp.searchsorted(zs_i, zs_i, side="right")
+        indices_hi = jnp.searchsorted(zs_i, zs_i_new, side="right")
         indices_lo = jnp.clip(indices_hi - 1, 0, zs_i.shape[0] - 2)
 
         zs_0 = zs_i[indices_lo]
@@ -280,17 +280,45 @@ def interp_field_onto_new_zs(field, z, z_new):
     
         return ys_0 + ws * (ys_1 - ys_0)
 
-    # Vectorize over spatial dimensions
+    # Vectorize over spatial dimension(s)
     interp_fn = vmap(interp_single_point, in_axes=(0, 0, 0))
     return interp_fn(field, zs, zs_new)
 
 
+def interp_fields_onto_new_zs(fields, z, z_new):
+    #Same as the above, but for multiple fields.
+    #we want to not have to keep doing the searchsort and stuff for 
+    #each field, but I'll fix that at a later date..
 
-def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
+    def interp_single_point(field_i, zs_i, zs_i_new):
+        indices_hi = jnp.searchsorted(zs_i, zs_i_new, side="right")
+        indices_lo = jnp.clip(indices_hi - 1, 0, zs_i.shape[0] - 2)
+
+        zs_0 = zs_i[indices_lo]
+        zs_1 = zs_i[indices_lo + 1]
+        ys_0 = field_i[indices_lo]
+        ys_1 = field_i[indices_lo + 1]
+
+        #linear_iterp:
+        ws = (zs_i_new - zs_0) / (zs_1 - zs_0 + 1e-12)
+    
+        return ys_0 + ws * (ys_1 - ys_0)
+
+    #Vectorise over spatial dimension(s)
+    interp_fn = vmap(interp_single_point, in_axes=(1, 0, 0))
+    #Vectorise over different fields
+    interp_fn_whole = vmap(interp_fn, in_axes=(0,None,None))
+
+    return interp_fn_whole(fields, zs, zs_new)
+
+
+def make_full_solver(iterations, timestep, acc=0, rheology_n=3, mode="DIVA", compile_=False):
 
     mom_res = make_linear_momentum_residual()
+    adv_res = make_adv_residual(timestep, acc)
 
-    jac_mom_res_fn = jacfwd(mom_res, argnums=0)
+    jac_mom_res_fn = jacfwd(mom_res, argnums=(0,1))
+    jac_adv_res_fn = jacfwd(adv_res, argnums=(0,1))
 
 
     #equation 2b
@@ -393,8 +421,31 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
         return u_vv
 
-
+        
     #equation 3
+    def setup_and_solve_full_linear_prob(u_va, mu_va, beta_eff, zs, h_old):
+        h = zs[...,-1]-zs[...,0]
+
+        jac_mom_res = jac_mom_res_fn(u_va, h, mu_va, beta_eff)
+        jac_adv_res = jac_adv_res_fn(u_va, h, h_old)
+
+        full_jacobian = jnp.block(
+                                  [ [jac_mom_res[0], jac_mom_res[1]],
+                                    [jac_adv_res[0], jac_adv_res[1]] ]
+                                  )
+    
+        rhs = jnp.concatenate((-mom_res(u_va, h, mu_va, beta_eff), -adv_res(u_va, h, h_old)))
+    
+        dvar = lalg.solve(full_jacobian, rhs)
+    
+        u_va = u_va.at[:].set(u_va+dvar[:n])
+        h = h.at[:].set(h+dvar[n:])
+
+        momres = jnp.max(jnp.abs(mom_res(u_va, h, mu_va, beta_eff)))
+
+        return u_va, h, momres
+
+
     def setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs):
         h = zs[...,-1]-zs[...,0]
 
@@ -410,7 +461,7 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
 
     def step_ssa(state):
-        u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
+        h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
 
         dudz = jnp.zeros_like(dudz)
 
@@ -423,11 +474,11 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
         beta_eff = new_beta(u_vv[...,0], zs)
 
         #solve linear problem
-        u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
+        u_va, h_new, residual = setup_and_solve_full_linear_prob(u_va, mu_va, beta_eff, zs, h_old)
         resrat = res/residual
 
 
-        zs_new = define_z_coordinates(n_levels, h_new)
+        zs = define_z_coordinates(n_levels, h_new)
 
 
         #update dudz
@@ -444,12 +495,12 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
 #        ##jax.debug.print("u_vv: {}", u_vv)
 #        jax.debug.print("u_va from vi of u_vv: {}", vertically_average(u_vv, zs))
 
-        return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
+        return h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
 
 
     def step(state):
         
-        u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
+        h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i, res, resrat = state
 
         #update viscosity
         mu_vv, mu_va = new_viscosity(u_va, dudz, zs)
@@ -463,15 +514,21 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
         beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
 
         #solve linear problem
-        u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
+        u_va, h_new, residual = setup_and_solve_full_linear_prob(u_va, mu_va, beta_eff, zs, h_old)
         resrat = res/residual
 
+        #define new z coords and interpolate vv things onto them.
+        zs_new = define_z_coordinates(n_levels, h_new)
+        u_vv  = interp_field_onto_new_zs(u_vv, zs, zs_new)
+        mu_vv = interp_field_onto_new_zs(mu_vv, zs, zs_new)
+
+
         #update dudz
-        dudz = new_dudz(mu_vv, u_va, beta_eff, zs)
-        jax.debug.print("dudz: {}", dudz[...,1])
+        dudz = new_dudz(mu_vv, u_va, beta_eff, zs_new)
+        #jax.debug.print("dudz: {}", dudz[...,1])
 
         #update u_vv
-        u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs, mu_vv, f2)
+        u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs_new, mu_vv, f2)
         #NOTE: Something's going quite wrong as u_vv inconsistent with u_va (i.e.
         #avg of u_vv not the same as u_va...)
 
@@ -485,15 +542,16 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
         #jax.debug.print("u_va error: {}", (u_va-vertically_average(u_vv, zs))/u_va)
 
 
-        return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
+        return h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs_new, i+1, residual, resrat
 
 
     def continue_condition(state):
-        _,_,_,_,_,_,_,_, i ,_,_ = state
+        _,_,_,_,_,_,_,_,_, i ,_,_ = state
         return i<iterations
 
 
     def iterator(u_va_init, dudz_init, zs):
+        h_old = zs[...,-1]-zs[...,0]
         
         residual_ratio = jnp.inf
         residual = 1
@@ -505,10 +563,10 @@ def make_full_solver(iterations, rheology_n=3, mode="DIVA", compile_=False):
         beta_init = dummy_small
         u_vv_init = dummy_large + u_va_init[...,None]
 
-        initial_state = u_va_init, u_vv_init, dummy_small, dummy_large,\
+        initial_state = h_old, u_va_init, u_vv_init, dummy_small, dummy_large,\
                         dudz_init, beta_init, dummy_small, zs, 0, residual, residual_ratio
 
-        #u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, residual, residual_ratio
+        #h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, residual, residual_ratio
 
         if mode=="DIVA":
             internal_step = step
@@ -1020,101 +1078,30 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 
 #DIVA:
 n_iterations = 15
-mom_solver = make_mom_solver_diva(n_iterations)
+timestep = 1e9
+accumulation = 2/(3.15e7) #2 m/yr
+solver = make_full_solver(n_iterations, timestep, acc=accumulation)
 
 
 u_va_init = u_trial
 dudz_init = jnp.zeros((n,n_levels))
 
-u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+
+zs = z_coordinates.copy()
+u_va = u_va_init.copy()
+dudz = dudz_init.copy()
+hs = []
+us = []
+for i in range(100):
+    print("Year: {}".format(int((i+1)*timestep/(3.15e7))))
+    h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = solver(u_va, dudz, zs)
+    
+    hs.append(zs[...,-1]-zs[...,0])
+    us.append(u_va)
+plotboths(hs, b, us, len(hs))
 
 
 
-mom_solver_ssa = make_mom_solver_diva(n_iterations, mode="SSA")
-u_va_ssa,_,_,_,_,_,_,_,_,_,_ = mom_solver_ssa(u_va_init, dudz_init, z_coordinates)
-
-
-
-
-
-###########PLOTTING STUFF:
-
-
-#percentage_diff_from_vert_mean = (100/u_va[...,None])*(u_vv-u_va[...,None])
-va_alt = vertically_average(u_vv, z_coordinates)
-#percentage_diff_from_vert_mean = (100/va_alt[...,None])*(u_vv-va_alt[...,None])
-
-#print(np.array2string(np.array(100*(va_alt-u_va)/u_va), formatter={'float_kind': lambda x: f"{x:.2f}"}))
-#raise
-
-
-X, Z = np.meshgrid(x, np.arange(n_levels), indexing='ij')  # (n, 11)
-
-# Replace Z with the actual z_coords from your data
-Z = z_coordinates  # shape (n, 11)
-
-
-percentage_diff_from_ssa = (100/u_va_ssa[...,None])*(u_vv-u_va_ssa[...,None])
-
-
-#plt.figure(figsize=(8, 4))
-#contour = plt.contourf(X, Z, u_vv*3.15e7, levels=10001, cmap='RdYlBu_r', vmin=0, vmax=5e2)
-#plt.colorbar(contour, label='Speed (m/y)')
-#plt.ylabel('Elevation (m)')
-#plt.show()
-
-
-# Plot difference in vert profile from mean
-plt.figure(figsize=(8, 4))
-#contour = plt.contourf(X, Z, percentage_diff_from_vert_mean, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
-contour = plt.contourf(X, Z, percentage_diff_from_ssa, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
-#plt.colorbar(contour, label='Percentage diff from vert avg')
-plt.colorbar(contour, label='Percentage diff from SSA solution')
-plt.ylabel('Elevation (m)')
-plt.show()
-
-
-
-
-plotboth(h_trial, b, u_va)
 
 raise
-
-plt.plot(u_va)
-plt.show()
-raise
-
-##test:
-#
-#base = jnp.zeros((1,))
-#surface = jnp.ones_like(base)
-#n_levels = 51
-#
-#v_coords, z_coords = define_z_coordinates(n_levels, base, surface)
-#
-#u_test = 1 + 10*(((z_coords-base)/(surface-base))**3)
-#
-##plt.plot((z_coords[0,:]-base)/(surface-base), u_test[0,:])
-##plt.show()
-##raise
-#
-##plt.figure(figsize=(5,5))
-##for i in range(u_test.shape[-1]):
-##    plt.plot(u_test[:,i])
-##plt.show()
-##raise
-#
-#u_vi = vertically_integrate(u_test, z_coords, preserve_structure=False)
-#
-#u_vi_true = jnp.zeros_like(base) + 3.5
-#
-#
-#print(u_vi)
-#print(u_vi_true)
-#print(u_vi - u_vi_true)
-#raise
-
-
-
-
 
