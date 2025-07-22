@@ -116,7 +116,6 @@ def make_linear_momentum_residual():
         is_floating = s_flt > s_gnd
         ffci = jnp.where(jnp.any(is_floating), jnp.argmax(is_floating), n)
 
-
         dudx = jnp.zeros((n+1,))
         dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
         #dudx = dudx.at[-2].set(dudx[-3])
@@ -167,6 +166,54 @@ def make_linear_momentum_residual():
 
     return mom_res
 
+def make_linear_momentum_residual_all_afloat():
+    #one-sided differences at the grounding line!
+
+    def mom_res(u, h, mu_centre, beta):
+
+        mu_face = interp_mu_onto_faces(mu_centre)
+
+        s_gnd = h + b #b is globally defined
+        s_flt = h*(1-rho/rho_w)
+        s = jnp.maximum(s_gnd, s_flt)
+
+        dudx = jnp.zeros((n+1,))
+        dudx = dudx.at[1:n].set((u[1:n] - u[:n-1])/dx)
+        #dudx = dudx.at[-2].set(dudx[-3])
+        dudx = dudx.at[-1].set(0)
+        ##set (or 'use' I guess) reflection boundary condition
+        dudx = dudx.at[0].set(2*u[0]/dx)
+
+
+        sliding = beta * u * dx
+        #making sure the Jacobian is full rank!
+        sliding = sliding.at[:].set(jnp.where(h>0, jnp.where(s_gnd>s_flt, sliding, 0), u * dx))
+
+        
+        h_face = jnp.zeros((n+1,))
+        h_face = h_face.at[1:n].set(0.5 * (h[1:n] + h[:n-1]))
+        h_face = h_face.at[-1].set(0)
+        h_face = h_face.at[0].set(h[0])
+
+
+        flux = h_face * mu_face * dudx
+
+
+        h_grad_s = jnp.zeros((n,))
+        h_grad_s = h_grad_s.at[1:n-1].set(h[1:n-1] * 0.5 * (s[2:n] - s[:n-2]))
+        h_grad_s = h_grad_s.at[-1].set(-h[-1] * 0.5 * s[-2])
+        #h_grad_s = h_grad_s.at[-2].set(-0.1)
+        h_grad_s = h_grad_s.at[0].set(h[0] * 0.5 * (s[1] - s[0]))
+      
+        #scale
+        h_grad_s = rho * g * h_grad_s
+
+        return flux[1:] - flux[:-1] - h_grad_s - sliding
+        #return - h_grad_s - sliding
+        #return flux[1:] - flux[:-1] - sliding
+
+    return mom_res
+
 
 def make_adv_residual(dt, accumulation):
     
@@ -211,8 +258,10 @@ def define_z_coordinates(n_levels, thk):
 
     base = jnp.maximum(base, b) #just to make sure
 
+    #Choosing cubic spacing. However, the vertical profiles I have seen look more
+    #like the maximum curvature is quite high in the ice column, so maybe uniform
+    #spacing would make more sense.
     v_coords_1d = jnp.linspace(0,1,n_levels)**3
-    #v_coords_3d = jnp.broadcast_to(v_coords_1d, (base.shape[0], base.shape[1], n_levels))
     
     v_coords_expanded = v_coords_1d[None, :] 
     #The ellipses are moot because this wouldn't work for 3d - it would have to be [None, None, :]
@@ -263,6 +312,7 @@ def vertically_average(field, z_coords):
 def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
     mom_res = make_linear_momentum_residual()
+    #mom_res = make_linear_momentum_residual_all_afloat()
 
     jac_mom_res_fn = jacfwd(mom_res, argnums=0)
 
@@ -377,9 +427,9 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
         f2 = arthern_function(mu_vv, zs, m=2)
 
-        jax.debug.print("beta: {}", beta)
-        jax.debug.print("f2: {}", f2)
-        jax.debug.print("u_va factor: {}", 1/(1+beta*f2))
+    #    jax.debug.print("beta: {}", beta)
+    #    jax.debug.print("f2: {}", f2)
+    #    jax.debug.print("u_va factor: {}", 1/(1+beta*f2))
 
         pre_add = (u_va / (1 + beta*f2))[...,None] 
         prefactor_exp = (beta_eff * u_va)[...,None]
@@ -413,7 +463,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         mu_vv, mu_va = new_viscosity(u_va, dudz, zs)
         #mu_va = new_viscosity_ssa(u_va)
         
-        jax.debug.print("{}", mu_va)
+    #    jax.debug.print("{}", mu_va)
 
         #update beta_eff
         beta_eff = new_beta(u_vv[...,0], zs)
@@ -666,8 +716,16 @@ u_trial = jnp.zeros_like(x)
 h_trial = h_init.copy()
 
 
+#
+##NOTE: different mom res for this required bc stuff to do w/
+##osd at gl goes wrong if no grounded ice. easy fix will do another time
+#b = jnp.zeros_like(b)-1000
+#h_trial = jnp.zeros_like(b)+800
 
-n_levels = 51
+
+
+
+n_levels = 31
 
 z_coordinates = define_z_coordinates(n_levels, h_trial)
 
@@ -691,12 +749,12 @@ dudz_init = jnp.zeros((n,n_levels))
 
 
 #DIVA SSA:
-#n_iterations = 15
-#
-#mom_solver = make_mom_solver_diva(n_iterations, mode="SSA")
-#
-#u_va_divassa, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
-#
+n_iterations = 15
+
+mom_solver = make_mom_solver_diva(n_iterations, mode="SSA")
+
+u_va_divassa, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+
 
 #DIVA DIVA:
 n_iterations = 15
@@ -706,11 +764,13 @@ mom_solver = make_mom_solver_diva(n_iterations, mode="DIVA")
 u_va_divadiva, u_vv_divadiva, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
 
 
-#SSA:
-n_iterations = 15
-mom_solver = make_mom_solver_ssa(n_iterations)
+plotboth(h_trial, b, u_va_divadiva)
 
-u_va_ssa, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
+##SSA:
+#n_iterations = 15
+#mom_solver = make_mom_solver_ssa(n_iterations)
+#
+#u_va_ssa, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
 
 
 
@@ -751,7 +811,7 @@ u_va_ssa, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial
 
 
 
-diff_from_va = u_vv_divadiva - u_va_divadiva[...,None]
+diff_from_va = u_vv_divadiva - u_va_divassa[...,None]
 #diff_from_va = u_vv_divadiva - u_va_divadiva[...,None]
 
 
@@ -775,11 +835,30 @@ Z = z_coordinates  # shape (n, 11)
 # Plot difference in vert profile from mean
 plt.figure(figsize=(8, 4))
 #contour = plt.contourf(X, Z, percentage_diff_from_vert_mean, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
-contour = plt.contourf(X, Z, diff_from_va*siy, levels=101, cmap='RdBu_r', vmin=-50, vmax=50)
-#plt.colorbar(contour, label='Percentage diff from vert avg')
-plt.colorbar(contour, label='')
+contour = plt.contourf(X, Z, diff_from_va*siy, levels=101, cmap='RdBu_r', vmin=-200, vmax=200)
+#plt.colorbar(contour, label='Speed difference from vertical average (m/a)')
+plt.colorbar(contour, label='Speed difference from SSA (m/a)')
 plt.ylabel('Elevation (m)')
+for i in range(z_coordinates.shape[-1]):
+    plt.plot(x, z_coordinates[...,i], c="k", alpha=0.1)
 plt.show()
+
+
+
+
+h = z_coordinates[...,-1]-z_coordinates[...,0]
+s_gnd = h + b #b is globally defined
+s_flt = h*(1-rho/rho_w)
+s = jnp.maximum(s_gnd, s_flt)
+
+is_floating = s_flt > s_gnd
+ffci = jnp.where(jnp.any(is_floating), jnp.argmax(is_floating), n)
+
+plt.plot(u_vv_divadiva[ffci-1,:]*3.15e7, z_coordinates[ffci-1,:])
+plt.ylabel("Elevation (m)")
+plt.xlabel("Speed at GL (m/a)")
+plt.show()
+
 
 raise
 
