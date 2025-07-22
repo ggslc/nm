@@ -283,12 +283,35 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         dudx = dudx.at[-1].set(dudx[-2])
     
         #mu_vv = 0.5 * B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc)**(0.5*(1/rheology_n - 1))
+        #not sure about the factor of 1/2...
+        #mu_vv = B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc**2)**(0.5*(1/rheology_n - 1))
         mu_vv = B * (jnp.abs(dudx)[...,None]**2 + 0.25*dudz**2 + epsilon_visc**2)**(0.5*(1/rheology_n - 1))
         
         mu_va = vertically_average(mu_vv, zs)
 
         return mu_vv, mu_va
 
+
+    #NOTE: This function is (and should be) unused.
+    def new_viscosity_ssa(u):
+        
+        #dudx = jnp.zeros((n+1,))
+        #dudx = dudx.at[1:-1].set((u[1:] - u[:-1])/dx)
+        #dudx = dudx.at[-1].set(dudx[-2])
+        ##set reflection boundary condition
+        #dudx = dudx.at[0].set(2*u[0]/dx)
+    
+        #mu_va = B * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
+
+        #If cell-centred
+        dudx = jnp.zeros_like(u)
+        dudx = dudx.at[1:-1].set(0.5 * (u[2:] - u[:-2]) / dx)
+        dudx = dudx.at[0].set(0.5 * (u[1]+u[0]) / dx) #reflection bc, remember
+        dudx = dudx.at[-1].set(dudx[-2])
+    
+        mu_va = B * (jnp.abs(dudx)**2 + epsilon_visc**2)**(-1/3)
+
+        return mu_va
 
     def arthern_function(mu_vv, zs, m=1, only_return_surface=True):
 
@@ -318,14 +341,9 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
     #f2 = arthern_function(mu_vv, zs, 2)
     #equation 5
     def new_beta_eff(u_base, f2, zs):
-
-        h = zs[...,-1] - zs[...,0]
         
-        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
-
-        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
-        beta = C * (1/(jnp.abs(u_base)**(2/3) + (1e-8)**(2/3))) * grounded_mask
-
+        beta = new_beta(u_base, zs)
+        
         #jax.debug.print("f2: {}", f2)
         #jax.debug.print("beta factor: {}", (1 / (1 + beta*f2)))
 
@@ -334,7 +352,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         #jax.debug.print("beta: {}", beta)
         #jax.debug.print("beta_eff: {}", beta_eff)
         
-        return beta_eff
+        return beta, beta_eff
 
 
     #equation 6
@@ -358,6 +376,10 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         f1_vv = arthern_function(mu_vv, zs, m=1, only_return_surface=False)
 
         f2 = arthern_function(mu_vv, zs, m=2)
+
+        jax.debug.print("beta: {}", beta)
+        jax.debug.print("f2: {}", f2)
+        jax.debug.print("u_va factor: {}", 1/(1+beta*f2))
 
         pre_add = (u_va / (1 + beta*f2))[...,None] 
         prefactor_exp = (beta_eff * u_va)[...,None]
@@ -389,13 +411,13 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
         #update viscosity
         mu_vv, mu_va = new_viscosity(u_va, dudz, zs)
+        #mu_va = new_viscosity_ssa(u_va)
         
-        jax.debug.print("{}",mu_va)
+        jax.debug.print("{}", mu_va)
 
         #update beta_eff
-        #beta_eff = new_beta(u_vv[...,0], zs)
-        f2 = arthern_function(mu_vv, zs, m=2)
-        beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
+        beta_eff = new_beta(u_vv[...,0], zs)
+        #Note, you can't get away with calculating beta_eff from new_beta_eff unfortunatel
 
         #solve linear problem
         u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
@@ -431,7 +453,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         #                lambda _: jnp.zeros_like(u_va),
         #                operand=None)
         f2 = arthern_function(mu_vv, zs, m=2)
-        beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
+        beta, beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
 
         #solve linear problem
         u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
@@ -454,7 +476,6 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         #jax.debug.print("u_va from vi of u_vv: {}", vertically_average(u_vv, zs))
 
         #jax.debug.print("u_va error: {}", (u_va-vertically_average(u_vv, zs))/u_va)
-
 
         return u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, i+1, residual, resrat
 
@@ -523,7 +544,7 @@ def make_mom_solver_ssa(iterations, rheology_n=3, compile_=False):
         dudx = dudx.at[0].set(0.5 * (u[1]+u[0]) / dx) #reflection bc, remember
         dudx = dudx.at[-1].set(dudx[-2])
     
-        mu_va = B * (jnp.abs(dudx) + epsilon_visc)**(-2/3)
+        mu_va = B * (jnp.abs(dudx)**2 + epsilon_visc**2)**(-1/3)
 
         return mu_va
 
@@ -619,13 +640,13 @@ accumulation = jnp.zeros_like(x)+0.3/(3.15e7)
 C = 7.624e6
 
 #A = 4.6146e-24
-A = 5e-26
+A = 5e-25
 #A = 5e-24 #This works, but I have to change the timestep from 1e10 to 5e8 which is a bit of a bummer.
 
 B = 2 * (A**(-1/3))
 
 #epsilon_visc = 1e-5/(3.15e7)
-epsilon_visc = 3e-11
+epsilon_visc = 3e-13
 
 
 #b = 720 - 778.5*x/750_000
@@ -637,6 +658,9 @@ x_s = x/l
 h_init = 4000*jnp.exp(-2*((x_s)**15))
 #h_init = 4000 - 3500*x_s*x_s
 #h_init = 500 + 4000*jnp.exp(-2*((x_s+0.35)**15))
+
+
+h_init = jnp.load("./possible_starting_thk.npy")
 
 u_trial = jnp.zeros_like(x)
 h_trial = h_init.copy()
@@ -660,6 +684,28 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 
 
 
+
+u_va_init = u_trial
+dudz_init = jnp.zeros((n,n_levels))
+
+
+
+#DIVA SSA:
+#n_iterations = 15
+#
+#mom_solver = make_mom_solver_diva(n_iterations, mode="SSA")
+#
+#u_va_divassa, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+#
+
+#DIVA DIVA:
+n_iterations = 15
+
+mom_solver = make_mom_solver_diva(n_iterations, mode="DIVA")
+
+u_va_divadiva, u_vv_divadiva, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+
+
 #SSA:
 n_iterations = 15
 mom_solver = make_mom_solver_ssa(n_iterations)
@@ -667,63 +713,26 @@ mom_solver = make_mom_solver_ssa(n_iterations)
 u_va_ssa, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
 
 
-#DIVA SSA:
-n_iterations = 15
-
-mom_solver = make_mom_solver_diva(n_iterations, mode="SSA")
-
-u_va_init = u_trial
-dudz_init = jnp.zeros((n,n_levels))
-
-u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
 
 
-plotboth(h_trial, b, (u_va-u_va_ssa))
-
-
-
-raise
-
-
-
-
-
-
-
-
-
-
-#DIVA:
-n_iterations = 30
-mom_solver = make_mom_solver_diva(n_iterations)
-
-
-u_va_init = u_trial
-dudz_init = jnp.zeros((n,n_levels))
-
-u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
-
-
-
-u_vv_avg = vertically_average(u_vv, zs)
-
-
-
-#plotboth(h_trial, b, u_va)
-
-#plotboth(h_trial, b, (u_va - u_vv[...,-1]))
-
-#raise
-#plt.plot(u_vv_avg*3.15e7)
-#plt.plot(u_va*3.15e7)
-#plt.plot(u_vv[...,-1]*siy)
+#plt.plot(u_va_ssa*siy, label="ssa")
+#plt.plot(u_va_divassa*siy, label="diva-ssa")
+#plt.plot(u_va_divadiva*siy, label="diva-diva")
+#plt.legend()
 #plt.show()
 #
-#
-#
-#
-#
 #raise
+
+
+
+
+
+#u_vv_avg = vertically_average(u_vv_divadiva, zs)
+
+#plt.plot((u_vv_avg-u_va_divadiva)*siy)
+#plt.show()
+#raise
+
 
 
 
@@ -740,13 +749,10 @@ u_vv_avg = vertically_average(u_vv, zs)
 #raise
 
 
-plt.plot((u_vv_avg-u_va)*siy)
-plt.show()
-raise
 
 
-
-diff_from_va = u_vv - u_vv_avg[...,None]
+diff_from_va = u_vv_divadiva - u_va_divadiva[...,None]
+#diff_from_va = u_vv_divadiva - u_va_divadiva[...,None]
 
 
 
@@ -775,7 +781,7 @@ plt.colorbar(contour, label='')
 plt.ylabel('Elevation (m)')
 plt.show()
 
-
+raise
 
 
 plotboth(h_trial, b, u_va)
