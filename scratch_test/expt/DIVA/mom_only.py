@@ -304,7 +304,6 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
             return fm
 
 
-    
     def new_beta(u_base, zs):
         h = zs[...,-1] - zs[...,0]
         
@@ -394,7 +393,9 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         jax.debug.print("{}",mu_va)
 
         #update beta_eff
-        beta_eff = new_beta(u_vv[...,0], zs)
+        #beta_eff = new_beta(u_vv[...,0], zs)
+        f2 = arthern_function(mu_vv, zs, m=2)
+        beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
 
         #solve linear problem
         u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
@@ -438,7 +439,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
 
         #update dudz
         dudz = new_dudz(mu_vv, u_va, beta_eff, zs)
-        jax.debug.print("dudz: {}", dudz[...,1])
+        #jax.debug.print("dudz: {}", dudz[...,1])
 
         #update u_vv
         u_vv = new_u_vv(dudz, u_va, beta, beta_eff, zs, mu_vv, f2)
@@ -489,8 +490,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
             internal_step = step
 
 
-        out_state = jax.lax.while_loop(continue_condition, step, initial_state)
-        #out_state = jax.lax.while_loop(continue_condition, step_ssa, initial_state)
+        out_state = jax.lax.while_loop(continue_condition, internal_step, initial_state)
         
         return out_state
 
@@ -529,7 +529,7 @@ def make_mom_solver_ssa(iterations, rheology_n=3, compile_=False):
 
 
     #just keeping this here to make it look more like the diva solver
-    def new_beta_eff(u, h):
+    def new_beta(u, h):
         
         grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
 
@@ -562,7 +562,7 @@ def make_mom_solver_ssa(iterations, rheology_n=3, compile_=False):
         jax.debug.print("{}",mu_va)
 
         #update beta_eff
-        beta = new_beta_eff(u_va, h)
+        beta = new_beta(u_va, h)
 
         #solve linear problem
         u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta, h)
@@ -596,91 +596,6 @@ def make_mom_solver_ssa(iterations, rheology_n=3, compile_=False):
     return iterator
 
 
-def make_joint_qn_solver(C, B, iterations, dt, acc=0, compile_=False):
-    
-    mom_res = make_linear_momentum_residual()
-    adv_res = make_adv_residual(dt, acc)
-
-    jac_mom_res_fn = jacfwd(mom_res, argnums=(0,1))
-    jac_adv_res_fn = jacfwd(adv_res, argnums=(0,1))
-    
-    def new_mu(u):
-    
-        dudx = jnp.zeros((n+1,))
-        dudx = dudx.at[1:-1].set((u[1:] - u[:-1])/dx)
-        dudx = dudx.at[-1].set(dudx[-2])
-        #set reflection boundary condition
-        dudx = dudx.at[0].set(2*u[0]/dx)
-    
-        mu_nl = B * (jnp.abs(dudx)+epsilon_visc)**(-2/3)
-
-        #mu_nl = B * (epsilon_visc**(-2/3))
-
-        return mu_nl
-
-    def new_beta(u, h):
-
-        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
-
-        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
-        beta = C * (1/(jnp.abs(u)**(2/3) + (1e-8)**(2/3))) * grounded_mask
-        #beta = C * (1e-6)**(-2/3) * grounded_mask
-
-        return beta
-
-    def continue_condition(state):
-        _,_,_, i,res,resrat = state
-        return i<iterations
-
-
-    def step(state):
-        u, h, h_init, i, prev_res, prev_resrat = state
-
-        beta = new_beta(u, h)
-        mu = new_mu(u)
-
-        jac_mom_res = jac_mom_res_fn(u, h, mu, beta)
-        jac_adv_res = jac_adv_res_fn(u, h, h_init, bmr)
-
-        full_jacobian = jnp.block(
-                                  [ [jac_mom_res[0], jac_mom_res[1]],
-                                    [jac_adv_res[0], jac_adv_res[1]] ]
-                                  )
-    
-        rhs = jnp.concatenate((-mom_res(u, h, mu, beta), -adv_res(u, h, h_init, bmr)))
-    
-        dvar = lalg.solve(full_jacobian, rhs)
-    
-        u = u.at[:].set(u+dvar[:n])
-        h = h.at[:].set(h+dvar[n:])
-
-        #TODO: add one for the adv residual too...
-        res = jnp.max(jnp.abs(mom_res(u, h, mu, beta))) 
-
-        return u, h, h_init, i+1, res, prev_res/res
-
-
-    def iterator(u_init, h_init):    
-
-        resrat = np.inf
-        res = np.inf
-
-        initial_state = u_init, h_init, h_init, 0, res, resrat
-
-        u, h, h_init, itn, res, resrat = jax.lax.while_loop(continue_condition, step, initial_state)
-
-        return u, h, res
-
-
-    if compile_:
-        return jax.jit(iterator)
-    else:
-        return iterator
-
-
-
-
-
 
 
 
@@ -693,6 +608,8 @@ dx = x[1]-x[0]
 
 rho = 900
 rho_w = 1000
+
+siy = 3.15e7
 
 g = 9.8
 
@@ -731,6 +648,8 @@ n_levels = 51
 z_coordinates = define_z_coordinates(n_levels, h_trial)
 
 
+
+
 #plt.figure()
 #for i in range(z_coordinates.shape[-1]):
 #    plt.plot(z_coordinates[...,i])
@@ -741,18 +660,41 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 
 
 
-##SSA:
-#n_iterations = 5
-#mom_solver = make_mom_solver_ssa(n_iterations)
-#
-#u_va_end, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
-#
-#plotboth(h_trial, b, u_va_end)
-#
-#raise
+#SSA:
+n_iterations = 15
+mom_solver = make_mom_solver_ssa(n_iterations)
+
+u_va_ssa, mu_end, beta_end, h_end, its, res_end, resrat_end = mom_solver(u_trial, h_trial)
+
+
+#DIVA SSA:
+n_iterations = 15
+
+mom_solver = make_mom_solver_diva(n_iterations, mode="SSA")
+
+u_va_init = u_trial
+dudz_init = jnp.zeros((n,n_levels))
+
+u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solver(u_va_init, dudz_init, z_coordinates)
+
+
+plotboth(h_trial, b, (u_va-u_va_ssa))
+
+
+
+raise
+
+
+
+
+
+
+
+
+
 
 #DIVA:
-n_iterations = 15
+n_iterations = 30
 mom_solver = make_mom_solver_diva(n_iterations)
 
 
@@ -763,22 +705,49 @@ u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = mom_solv
 
 
 
-mom_solver_ssa = make_mom_solver_diva(n_iterations, mode="SSA")
-u_va_ssa,_,_,_,_,_,_,_,_,_,_ = mom_solver_ssa(u_va_init, dudz_init, z_coordinates)
+u_vv_avg = vertically_average(u_vv, zs)
 
 
+
+#plotboth(h_trial, b, u_va)
+
+#plotboth(h_trial, b, (u_va - u_vv[...,-1]))
+
+#raise
+#plt.plot(u_vv_avg*3.15e7)
+#plt.plot(u_va*3.15e7)
+#plt.plot(u_vv[...,-1]*siy)
+#plt.show()
+#
+#
+#
+#
+#
+#raise
 
 
 
 ###########PLOTTING STUFF:
 
+#mom_solver_ssa = make_mom_solver_diva(n_iterations, mode="SSA")
+#u_va_ssa,_,_,_,_,_,_,_,_,_,_ = mom_solver_ssa(u_va_init, dudz_init, z_coordinates)
 
 #percentage_diff_from_vert_mean = (100/u_va[...,None])*(u_vv-u_va[...,None])
-va_alt = vertically_average(u_vv, z_coordinates)
+#va_alt = vertically_average(u_vv, z_coordinates)
 #percentage_diff_from_vert_mean = (100/va_alt[...,None])*(u_vv-va_alt[...,None])
 
 #print(np.array2string(np.array(100*(va_alt-u_va)/u_va), formatter={'float_kind': lambda x: f"{x:.2f}"}))
 #raise
+
+
+plt.plot((u_vv_avg-u_va)*siy)
+plt.show()
+raise
+
+
+
+diff_from_va = u_vv - u_vv_avg[...,None]
+
 
 
 X, Z = np.meshgrid(x, np.arange(n_levels), indexing='ij')  # (n, 11)
@@ -787,7 +756,7 @@ X, Z = np.meshgrid(x, np.arange(n_levels), indexing='ij')  # (n, 11)
 Z = z_coordinates  # shape (n, 11)
 
 
-percentage_diff_from_ssa = (100/u_va_ssa[...,None])*(u_vv-u_va_ssa[...,None])
+#percentage_diff_from_ssa = (100/u_va_ssa[...,None])*(u_vv-u_va_ssa[...,None])
 
 
 #plt.figure(figsize=(8, 4))
@@ -800,9 +769,9 @@ percentage_diff_from_ssa = (100/u_va_ssa[...,None])*(u_vv-u_va_ssa[...,None])
 # Plot difference in vert profile from mean
 plt.figure(figsize=(8, 4))
 #contour = plt.contourf(X, Z, percentage_diff_from_vert_mean, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
-contour = plt.contourf(X, Z, percentage_diff_from_ssa, levels=101, cmap='RdBu_r', vmin=-25, vmax=25)
+contour = plt.contourf(X, Z, diff_from_va*siy, levels=101, cmap='RdBu_r', vmin=-50, vmax=50)
 #plt.colorbar(contour, label='Percentage diff from vert avg')
-plt.colorbar(contour, label='Percentage diff from SSA solution')
+plt.colorbar(contour, label='')
 plt.ylabel('Elevation (m)')
 plt.show()
 
