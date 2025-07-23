@@ -258,10 +258,11 @@ def define_z_coordinates(n_levels, thk):
 
     base = jnp.maximum(base, b) #just to make sure
 
-    #Choosing cubic spacing. However, the vertical profiles I have seen look more
+    #Choosing quadratic spacing. However, the vertical profiles I have seen look more
     #like the maximum curvature is quite high in the ice column, so maybe uniform
-    #spacing would make more sense.
-    v_coords_1d = jnp.linspace(0,1,n_levels)**3
+    #spacing would make more sense. But it's based on equation 6. If you assume viscosity
+    #is vertically uniform, then dudz is linear so u is quadratic in z.
+    v_coords_1d = jnp.linspace(0,1,n_levels)**2
     
     v_coords_expanded = v_coords_1d[None, :] 
     #The ellipses are moot because this wouldn't work for 3d - it would have to be [None, None, :]

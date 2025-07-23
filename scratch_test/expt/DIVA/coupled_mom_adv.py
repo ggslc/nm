@@ -213,7 +213,7 @@ def define_z_coordinates(n_levels, thk):
 
     base = jnp.maximum(base, b) #just to make sure
 
-    v_coords_1d = jnp.linspace(0,1,n_levels)**3
+    v_coords_1d = jnp.linspace(0,1,n_levels)**2
     #v_coords_3d = jnp.broadcast_to(v_coords_1d, (base.shape[0], base.shape[1], n_levels))
     
     v_coords_expanded = v_coords_1d[None, :] 
@@ -616,7 +616,6 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
             return fm[...,-1]
         else:
             return fm
-
 
     
     def new_beta(u_base, zs):
@@ -1024,6 +1023,10 @@ h_init = 4000*jnp.exp(-2*((x_s)**15))
 #h_init = 4000 - 3500*x_s*x_s
 #h_init = 500 + 4000*jnp.exp(-2*((x_s+0.35)**15))
 
+
+h_init = jnp.load("./possible_starting_thk.npy")
+
+
 u_trial = jnp.zeros_like(x)
 h_trial = h_init.copy()
 
@@ -1054,10 +1057,15 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 #
 #raise
 
+
+
+
+
 #DIVA:
 n_iterations = 15
 timestep = 1e9
-accumulation = 2/(3.15e7) #2 m/yr
+#accumulation = 2/(3.15e7) #2 m/yr
+accumulation = 0
 solver = make_full_solver(n_iterations, timestep, acc=accumulation)
 
 
@@ -1070,13 +1078,13 @@ u_va = u_va_init.copy()
 dudz = dudz_init.copy()
 hs = []
 us = []
-for i in range(100):
+for i in range(250):
     print("Year: {}".format(int((i+1)*timestep/(3.15e7))))
     h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = solver(u_va, dudz, zs)
     
     hs.append(zs[...,-1]-zs[...,0])
     us.append(u_va)
-plotboths(hs, b, us, len(hs))
+#plotboths(hs, b, us, len(hs))
 
 
 siy=3.15e7
@@ -1088,9 +1096,11 @@ Z = zs
 
 plt.figure(figsize=(8, 4))
 #contour = plt.contourf(X, Z, u_vv*siy, levels=101, cmap='gnuplot2', vmin=0, vmax=10000)
-contour = plt.contourf(X, Z, (u_vv-u_vv[...,0][...,None])*siy, levels=101, cmap='gnuplot2', vmin=0, vmax=250)
+contour = plt.contourf(X, Z, (u_vv-u_vv[...,0][...,None])*siy, levels=101, cmap='gnuplot2', vmin=0, vmax=1)
 plt.colorbar(contour, label='Speed (m/a)')
 plt.ylabel('Elevation (m)')
+for i in range(z_coordinates.shape[-1]):
+    plt.plot(x, zs[...,i], c="white", alpha=0.15)
 plt.show()
 
 
