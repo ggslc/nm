@@ -2,6 +2,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy
+import matplotlib.pyplot as plt
+
 
 #TODO: function for translating stencil into set of basis vectors
 
@@ -119,6 +121,40 @@ def make_sparse_jacrev_fct(basis_vectors, i_coord_sets, j_coord_sets):
         return jac
 
     return sparse_jacrev, densify_sparse_jac
+
+
+
+def make_sparse_jacrev_fct_sqaure_stencil_2d(basis_vectors, i_coord_sets):
+    # This can be made significantly more general, but this is just to
+    # see whether the basics work and reduce demands on memory
+
+    def sparse_jacrev(fun_, primals):
+        
+        y, vjp_fun = jax.vjp(fun_, *primals)
+        rows = []
+
+        #need to get rid of this loop!!
+        #maybe vmap or something?
+        for bv in basis_vectors:
+            row, _ = vjp_fun(bv)
+            rows.append(row)
+
+        rows = jnp.concatenate(rows)
+
+        # print(rows)
+        return rows
+
+    def densify_sparse_jac(jacrows_vec):
+        jac = jnp.zeros((n, n))
+
+        jac = jac.at[i_coord_sets, :].set(jacrows_vec)
+
+        return jac
+
+    return sparse_jacrev, densify_sparse_jac
+
+
+
 
 def create_repeated_array(base_array, n):
     repetitions = int(jnp.ceil(n / len(base_array)))
@@ -530,51 +566,52 @@ def oo_basis_vectors_2d_square_stencil(nr, nc, stencil_radius=2):
     n_stencils_tall = int(jnp.ceil(nr/stencil_width))
 
 
-    tiled_domain = jnp.tile(colour_template, (n_stencils_tall, n_stencils_wide))[:nr, :nc]
+    tiled_domain = jnp.tile(colouring_template, (n_stencils_tall, n_stencils_wide))[:nr, :nc]
     td_flat = tiled_domain.flatten()
 
-
     basis_vectors = []
-    colour_coords = []
-    for colour in range(stencil_width**2):
-        colour_indices = jnp.where(td_flat==colour)[0]
-        bv = jnp.zeros((nr*nc))
-        bv = bv.at[colour_indices].set(1)
-        basis_vectors.append(bv)
-        colour_coordinates = jnp.zeros_like(bv)
-        colour_coordinates = colour_coordinates.at[colour_indices].set(colour_indices)
-        colour_coords.append(colour_coordinates.reshape(nr, nc)) #would be nice to only have to one jnp.where...
-        plt.imshow(np.array(colour_coordinates.reshape(nr, nc)), cmap="Spectral")
-        plt.show()
-        raise
-
-        print(bvs[-1])
-        print(colour_coords[-1])
 
     #Need to know, when you do the vjp, what the coordinates are of the resulting non-zero values too...
-    j_coords = jnp.arange(nr*nc) #This isn't exactly right. Maybe it is. There might be some leading or trailing zeros here or there but it might be ok to include the coords for them. Yeah, maybe that's fine.
+    j_coords = jnp.arange(nr*nc, dtype=jnp.int16)
     i_coords = []
 
     for colour in range(stencil_width**2):
-        i_coordinates = jnp.zeros((nr+2*stencil_radius, nc+2*stencil_radius))
-        buffered_colour_coords = i_coordinates.copy()
-        buffered_colour_coords[stencil_radius:-stencil_radius,stencil_radius:-stencil_radius] = colour_coords[colour]
+        colour_indices = jnp.where(td_flat==colour)[0].astype(jnp.int16)
+        
+        bv = jnp.zeros((nr*nc), dtype=jnp.int16).at[colour_indices].set(1)
+        basis_vectors.append(bv)
 
-        #9-point stencil:
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, 0, 1)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, -1, 1,)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, -1, 0)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, -1, -1)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, 0, -1)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, 1, -1)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, 1, 0)
-        i_coordinates = i_coordinates + jnp.roll(buffered_colour_coords, 1, 1)
+        colour_coordinates = jnp.zeros_like(bv, dtype=jnp.int16).at[colour_indices].set(colour_indices)
 
-        i_coords.append(i_coordinates.flatten())
+        ccs_padded = jnp.pad(colour_coordinates.reshape(nr, nc),\
+                     pad_width=((stencil_radius, stencil_radius), (stencil_radius, stencil_radius)),\
+                     mode='constant', constant_values=0)
+
+        i_coordinates = jnp.zeros((nr+2*stencil_radius, nc+2*stencil_radius), dtype=jnp.int16)
+        # Sum over all neighbors in the square stencil
+        for dx in range(-stencil_radius, stencil_radius + 1):
+            for dy in range(-stencil_radius, stencil_radius + 1):
+                i_coordinates = i_coordinates + jnp.roll(ccs_padded, shift=(dx, dy), axis=(0, 1))
+
+        i_coords.append(i_coordinates[stencil_radius:-stencil_radius,stencil_radius:-stencil_radius].flatten())
+
+    return zip(basis_vectors, i_coords)
 
 
-    return zip(basis_vectors, jnp.concatenate(i_coords), jnp.concatenate(j_coords))
+def sparsity_pattern(nr, nc, stencil_radius):
+    bv_coordinate_pairs = oo_basis_vectors_2d_square_stencil(nr, nc, stencil_radius)
 
+    j_coords = jnp.arange(nr*nc)
+    
+    
+    pattern = jnp.zeros((nr*nc, nr*nc))*jnp.nan
+    for bv, cp in bv_coordinate_pairs:
+        pattern = pattern.at[cp, j_coords].set(1)
+
+    plt.imshow(np.array(pattern))
+    plt.show()
+
+sparsity_pattern(50,50,3)
 
 
 #basis_vectors, i_coord_sets, j_coord_sets = basis_vectors_etc(20, 5)
