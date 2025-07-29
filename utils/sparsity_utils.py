@@ -1,4 +1,4 @@
-import jax
+
 import jax.numpy as jnp
 import numpy as np
 import scipy
@@ -7,10 +7,18 @@ import matplotlib.pyplot as plt
 
 #TODO: function for translating stencil into set of basis vectors
 
+def dodgy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
+
+    a = scipy.sparse.coo_array((values, (coordinates[:,0], coordinates[:,1])), shape=shape).tocsr()
+
+    if return_decomposition:
+        return a.indptr, a.indices, a.data
+    else:
+        return a
 
 def scipy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
 
-    a = scipy.sparse.coo_array((values, (coordinates[:,0], coordinates[:,1])), shape=shape).tocsr()
+    a = scipy.sparse.coo_array((values, (coordinates[0,:], coordinates[1,:])), shape=shape).tocsr()
 
     if return_decomposition:
         return a.indptr, a.indices, a.data
@@ -147,7 +155,11 @@ def make_sparse_jacrev_fct_new(basis_vectors, i_coord_sets, j_coord_sets, mask):
     def densify_sparse_jac(jacrows_vec, n):
         jac = jnp.zeros((n, n))
 
-        jac = jac.at[i_coord_sets[mask], j_coord_sets[mask]].set(jacrows_vec[mask])
+        ics = i_coord_sets[mask].astype(jnp.int32)
+        jcs = j_coord_sets[mask].astype(jnp.int32)
+        jac_vec  = jacrows_vec[mask]
+
+        jac = jac.at[ics, jcs].set(jac_vec)
 
         return jac
 
@@ -243,7 +255,7 @@ def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2):
         #i_coords.append(i_coordinates_slim.astype(jnp.int32))
         #j_coords.append(j_coordinates_slim.astype(jnp.int32))
        
-        i_coords.append(i_coordinates.astype(jnp.int32))
+        i_coords.append(i_coordinates)#.astype(jnp.int32)) #again, no casting to int!!
         #j_coords.append(j_coordinates.astype(jnp.int32))
 
     return basis_vectors, i_coords#, j_coords
@@ -255,13 +267,18 @@ def sparsity_pattern(nr, nc, r):
     j_coord_ar = jnp.arange(nr*nc)
 
     pattern = jnp.zeros((nr*nc, nr*nc))*jnp.nan
-    for _, i_coord_ar in zip(bv_coordinate_pairs):
+    for _, i_coord_ar in zip(bvs, i_coords):
         mask = ~jnp.isnan(i_coord_ar)
 
-        pattern = pattern.at[i_coord_ar[mask], j_coord_ar[mask]].set(1)
+        pattern = pattern.at[i_coord_ar[mask].astype(jnp.int32),\
+                             j_coord_ar[mask].astype(jnp.int32)].set(1)
 
     plt.imshow(np.array(pattern))
     plt.show()
+
+
+#sparsity_pattern(5, 5, 1)
+#raise
 
 
 def create_repeated_array(base_array, n):
