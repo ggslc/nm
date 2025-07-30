@@ -1,4 +1,4 @@
-
+import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy
@@ -227,23 +227,44 @@ def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2):
         #(actually, the index values plus one as I'd like to reserve 0 for
         #where nodes aren't connected to a particular colour at any location (occurs
         #at the boundaries sometimes))
-        colour_coordinates = jnp.zeros((nr*nc,)).at[colour_indices]\
-                             .set(colour_indices+1).astype(jnp.int32)
+        #NOTE: you have to cast the zero array as 32-bit integer. If you don't, the
+        #at/set will inherit the type (default float32) and you get integer overflow
+        #errors if coordinate values exceed 16_777_216. Irritating bug.
+        colour_coordinates = jnp.zeros((nr*nc,), dtype=jnp.int32)\
+                             .at[colour_indices].set(colour_indices+1)
     
         #2D version, padded by a stencil radius
         ccs_padded = jnp.pad(colour_coordinates.reshape(nr, nc),\
                      pad_width=((r, r),(r, r)),\
-                     mode='constant', constant_values=0).astype(jnp.int32)
+                     mode='constant', constant_values=0)
 
         #fill a stencil-radius around each node of colour with the index of that colour
-        i_coordinates = jnp.zeros((nr, nc))
+        i_coordinates = jnp.zeros((nr, nc), dtype=jnp.int32)
         for di in range(-r, r + 1):
             for dj in range(-r, r + 1):
                 i_coordinates += ccs_padded[(r+di):(r+di+nr), (r+dj):(r+dj+nc)]
-        
+
         #don't cast as int type as the nans are important!
-        i_coordinates = jnp.where(i_coordinates.flatten()==0, jnp.nan, i_coordinates.flatten()-1)
+        #jnp.nan is of type float32 I think. So the where promotesd
+        #i_coordinates to float32 also. So have to use -1 and avoid nan.
+        #i_coordinates = jnp.where(i_coordinates.flatten()==0, jnp.nan, i_coordinates.flatten()-1)
+        i_coordinates = jnp.where(i_coordinates.flatten()==0, -1, i_coordinates.flatten()-1)
        
+        if i_coordinates.max()>=(nr*nc):
+            print(colour)
+            print(jnp.where(td_flat==colour)[0].max())
+            print(colour_indices.max())
+            print((colour_indices+1).astype(jnp.int32).max())
+            
+            print(jnp.zeros((nr*nc,), dtype=jnp.int32).at[colour_indices].set((colour_indices+1).astype(jnp.int32)).astype(jnp.int32).max())
+            print(colour_coordinates.max())
+
+            print(ccs_padded.max())
+            
+            print(i_coordinates.max())
+            print((jnp.where(td_flat==colour)[0]+1).astype(jnp.int32).max())
+            raise
+
 
         ##j coordinates. The only reason for doing this is the pesky edge bits which
         ##The following is possible, but I think it makes more sense to keep the nans in for later use.

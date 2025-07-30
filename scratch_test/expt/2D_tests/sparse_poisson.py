@@ -1,6 +1,7 @@
 #1st party
 from pathlib import Path
 import sys
+import time
 
 
 #local apps
@@ -67,9 +68,9 @@ def make_residual_function(C, f):
         y_flux_diffs = y_flux_diffs.at[-1,:].set((dx/dy) * (-2*u_2d[-1,:]))
 
 
-        volume_term = (C*u_2d + f)*dx*dy
+        volume_term = (-C*u_2d + f)*dx*dy
 
-        return (x_flux_diffs + y_flux_diffs - volume_term).reshape(-1)
+        return (-x_flux_diffs - y_flux_diffs - volume_term).reshape(-1)
 
     return residual_function
 
@@ -83,7 +84,7 @@ def make_newton_solver(C, f, n_iterations):
 
     i_coordinate_sets = jnp.concatenate(i_coordinate_sets)
     j_coordinate_sets = jnp.tile(jnp.arange(nr*nc), len(basis_vectors))
-    mask = ~jnp.isnan(i_coordinate_sets)
+    mask = (i_coordinate_sets>=0).astype(jnp.int8)
 
     sparse_jacrev_func, densify_func = make_sparse_jacrev_fct_new(basis_vectors,\
                                              i_coordinate_sets,\
@@ -108,7 +109,6 @@ def make_newton_solver(C, f, n_iterations):
 
             #print(residual_jac_dense)
             #print(rhs)
-            #raise
 
             u += lalg.solve(residual_jac_dense, rhs)
 
@@ -124,8 +124,6 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
     size = comm.Get_size()
 
     iptr, j, values = scipy_coo_to_csr(values, coordinates, jac_shape, return_decomposition=True)
-
-    
 
     #rows_local = int(jac_shape[0] / size)
 
@@ -144,14 +142,22 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
     ksp.setOperators(A)
     #ksp.setFromOptions()
     
-    
-    if preconditioner == 'hypre':
-        pc = ksp.getPC()
-        pc.setType('hypre')
-        pc.setHYPREType('boomeramg')
-    else:
-        pc = ksp.getPC()
-        pc.setType(preconditioner)
+    if preconditioner is not None:
+        #assessing if preconditioner is doing anything:
+        #print((A*x - b).norm())
+
+        if preconditioner == 'hypre':
+            pc = ksp.getPC()
+            pc.setType('hypre')
+            pc.setHYPREType('boomeramg')
+        else:
+            pc = ksp.getPC()
+            pc.setType(preconditioner)
+
+        #pc.apply(b, x)
+        #print((A*x - b).norm())
+        #raise
+
 
     if precondition_only:
         pc.apply(b, x)
@@ -160,6 +166,7 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
     
     # Print the solution
     #x.view()
+    
 
     x_jnp = jnp.array(x.getArray())
 
@@ -218,7 +225,8 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
 
     i_coordinate_sets = jnp.concatenate(i_coordinate_sets)
     j_coordinate_sets = jnp.tile(jnp.arange(nr*nc), len(basis_vectors))
-    mask = ~jnp.isnan(i_coordinate_sets)
+    #mask = ~jnp.isnan(i_coordinate_sets)
+    mask = (i_coordinate_sets>=0)
 
 
     sparse_jacrev_func, _ = make_sparse_jacrev_fct_new(basis_vectors,\
@@ -230,12 +238,13 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
     i_coordinate_sets = i_coordinate_sets[mask]
     j_coordinate_sets = j_coordinate_sets[mask]
     coords = jnp.stack([i_coordinate_sets, j_coordinate_sets])
+
     def solver(u_trial):
         
         u = u_trial.copy()
 
         #interesting to see that it doesn't go that well if I do only one iteration
-        #even though the problem is linear... wtf.
+        #even though the problem is linear... suggests it's not solving it all that well..
         for i in range(n_iterations):
             print(jnp.max(jnp.abs(residual_func(u))))
 
@@ -249,6 +258,9 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
             
             print(residual_jac_sparse[mask].shape)
             print(coords.shape)
+
+
+            #t0 = time.time()
             
             #du, res = sparse_linear_solve(residual_jac_sparse[mask], coords, (nr*nc, nr*nc), rhs, mode="scipy-umfpack")
             #du, res = sparse_linear_solve(residual_jac_sparse[mask], coords, (nr*nc, nr*nc), rhs, mode="jax-native")
@@ -258,8 +270,15 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
             #print(coords.max())
             #raise
 
-            du = solve_petsc_sparse(residual_jac_sparse[mask], coords, (nr*nc, nr*nc), rhs, precondition_only=False)
+            du = solve_petsc_sparse(residual_jac_sparse[mask],\
+                                    coords, (nr*nc, nr*nc), rhs,\
+                                    preconditioner="hypre",\
+                                    precondition_only=False)
             
+            #t1 = time.time()
+            #print("Linear solve time: {}s".format(t1-t0))
+            
+
             u += du
 
         print(jnp.max(jnp.abs(residual_func(u))))
@@ -270,7 +289,7 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
 
 
 
-def spherical_wave(nr, nc, amplitude=1, frequency=10, wavelength=0.1):
+def spherical_wave(nr, nc, amplitude=1, frequency=10):
     y = jnp.linspace(0, 1, nr)
     x = jnp.linspace(0, 1, nc)
     yy, xx = jnp.meshgrid(y, x, indexing='ij')
@@ -278,51 +297,107 @@ def spherical_wave(nr, nc, amplitude=1, frequency=10, wavelength=0.1):
     cy, cx = (0.5, 0.5)
     r = jnp.sqrt((yy - cy)**2 + (xx - cx)**2)
 
-    wave = amplitude * jnp.sin(2 * jnp.pi * frequency * r)
+    wave = amplitude * (1 + jnp.sin(2 * jnp.pi * frequency * r))
 
     return wave
 
-nr = 4000
-nc = 4000
+nr = int(2**12.5)
+nc = int(2**12.5)
 dy = 1/nr
 dx = 1/nc
 
-C = spherical_wave(nr, nc, amplitude=1000)
+C = spherical_wave(nr, nc, frequency=20, amplitude=500)
 
 
-#plt.imshow(C, vmin=0, vmax=1000)
+##plt.imshow(C)
+##plt.colorbar()
+##plt.show()
+##raise
+#
+#f = 1
+#
+#u_init = jnp.ones_like(C).reshape(-1)
+#
+##1 should be enough as the problem is linear but seemingly benefits from another
+#n_iterations = 2
+##solver = make_newton_solver(C, f, n_iterations)
+#solver = make_newton_solver_sparse_jac(C, f, n_iterations)
+#
+#t0 = time.time()
+#u_final = solver(u_init)
+#t1 = time.time()
+#print("Solver time with nr={}: {}s".format(nr, t1-t0))
+#
+#plt.imshow(u_final.reshape((nr,nc)), cmap="gnuplot2", vmin=0)
+#plt.colorbar()
+#plt.show()
+#
+#plt.figure(figsize=(10, 4))
+#plt.plot(u_final.reshape((nr,nc))[1250,:])
 #plt.show()
 #raise
 
-f = 1
 
-u_init = jnp.ones_like(C).reshape(-1)
+def plot_with_diagonal_grid(x, y, title="X vs Y with Diagonal Grid", xlabel="x", ylabel="y"):
+    plt.figure(figsize=(8, 5))
+    ax = plt.gca()
 
-#1 should be enough as the problem is linear but seemingly benefits from another
-n_iterations = 2
-#solver = make_newton_solver(C, f, n_iterations)
-solver = make_newton_solver_sparse_jac(C, f, n_iterations)
+    # Plot the data
+    plt.plot(x, y, marker='o', linestyle='-', color='royalblue', label='Data')
 
-u_final = solver(u_init)
+    # Get actual data limits (including padding)
+    xmin, xmax = np.min(x), np.max(x)
+    ymin, ymax = np.min(y), np.max(y)
+
+    # Expand limits a bit for aesthetics
+    pad_x = (xmax - xmin) * 0.05
+    pad_y = (ymax - ymin) * 0.05
+    xmin -= pad_x
+    xmax += pad_x
+    ymin -= pad_y
+    ymax += pad_y
+
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+
+    # Compute diagonal gridline offsets (c in y = x + c) that intersect visible region
+    c_min = ymin - xmax
+    c_max = ymax - xmin
+    offsets = np.arange(np.floor(c_min), np.ceil(c_max) + 1)
+
+    for c in offsets:
+        # y = x + c
+        xs = np.array([xmin, xmax])
+        ys = xs + c
+        ax.plot(xs, ys, color='lightgray', linestyle='--', linewidth=1, zorder=0)
+
+        # y = 2x + c
+        xs = np.array([xmin, xmax])
+        ys = 2*(xs + c)
+        ax.plot(xs, ys, color='lightgray', linestyle=':', linewidth=1, zorder=0)
 
 
-#plt.plot(u_final.reshape((nr,nc))[50,:])
-#plt.show()
-#raise
-
-plt.imshow(u_final.reshape((nr,nc)), cmap="RdBu_r", vmin=-0.03, vmax=0.03)
-plt.show()
-
-
-
-
+    # Standard grid, labels, etc.
+    #plt.grid(True, which='both', linestyle=':', linewidth=0.5, alpha=0.6)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    #plt.legend()
+    plt.tight_layout()
+    plt.show()
 
 
+#dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24., 25.])
+#times_log2 = np.array([1.52356196, 1.36120689, 1.39999135, 1.41792001, 1.49005662,
+#              1.67671874, 2.12465899, 2.60715274, 3.26828467, 3.98713893,
+#              5.23817542, 6.20045727, 7.50049934, 9.926])
 
+dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24.])
+times_log2 = np.array([1.52356196, 1.36120689, 1.39999135, 1.41792001, 1.49005662,
+              1.67671874, 2.12465899, 2.60715274, 3.26828467, 3.98713893,
+              5.23817542, 6.20045727, 7.50049934])
 
-
-
-
+plot_with_diagonal_grid(dofs_log2, times_log2, title="", xlabel="log2(n_dofs)", ylabel="log2(time)")
 
 
 
