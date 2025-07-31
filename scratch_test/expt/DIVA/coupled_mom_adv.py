@@ -213,7 +213,7 @@ def define_z_coordinates(n_levels, thk):
 
     base = jnp.maximum(base, b) #just to make sure
 
-    v_coords_1d = jnp.linspace(0,1,n_levels)**3
+    v_coords_1d = jnp.linspace(0,1,n_levels)**2
     #v_coords_3d = jnp.broadcast_to(v_coords_1d, (base.shape[0], base.shape[1], n_levels))
     
     v_coords_expanded = v_coords_1d[None, :] 
@@ -374,22 +374,12 @@ def make_full_solver(iterations, timestep, acc=0, rheology_n=3, mode="DIVA", com
     #equation 5
     def new_beta_eff(u_base, f2, zs):
 
-        h = zs[...,-1] - zs[...,0]
-        
-        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
+        beta = new_beta(u_base, zs)
 
-        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
-        beta = C * (1/(jnp.abs(u_base)**(2/3) + (1e-8)**(2/3))) * grounded_mask
-
-        #jax.debug.print("f2: {}", f2)
-        #jax.debug.print("beta factor: {}", (1 / (1 + beta*f2)))
 
         beta_eff = beta / (1 + beta*f2)
-
-        #jax.debug.print("beta: {}", beta)
-        #jax.debug.print("beta_eff: {}", beta_eff)
         
-        return beta_eff
+        return beta, beta_eff
 
 
     #equation 6
@@ -432,7 +422,7 @@ def make_full_solver(iterations, timestep, acc=0, rheology_n=3, mode="DIVA", com
         full_jacobian = jnp.block(
                                   [ [jac_mom_res[0], jac_mom_res[1]],
                                     [jac_adv_res[0], jac_adv_res[1]] ]
-                                  )
+                                 )
     
         rhs = jnp.concatenate((-mom_res(u_va, h, mu_va, beta_eff), -adv_res(u_va, h, h_old)))
     
@@ -511,7 +501,7 @@ def make_full_solver(iterations, timestep, acc=0, rheology_n=3, mode="DIVA", com
         #                lambda _: jnp.zeros_like(u_va),
         #                operand=None)
         f2 = arthern_function(mu_vv, zs, m=2)
-        beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
+        beta, beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
 
         #solve linear problem
         u_va, h_new, residual = setup_and_solve_full_linear_prob(u_va, mu_va, beta_eff, zs, h_old)
@@ -521,7 +511,6 @@ def make_full_solver(iterations, timestep, acc=0, rheology_n=3, mode="DIVA", com
         zs_new = define_z_coordinates(n_levels, h_new)
         u_vv  = interp_field_onto_new_zs(u_vv, zs, zs_new)
         mu_vv = interp_field_onto_new_zs(mu_vv, zs, zs_new)
-
 
         #update dudz
         dudz = new_dudz(mu_vv, u_va, beta_eff, zs_new)
@@ -628,7 +617,6 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         else:
             return fm
 
-
     
     def new_beta(u_base, zs):
         h = zs[...,-1] - zs[...,0]
@@ -645,22 +633,11 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
     #equation 5
     def new_beta_eff(u_base, f2, zs):
 
-        h = zs[...,-1] - zs[...,0]
-        
-        grounded_mask = jnp.where((b+h)<(h*(1-rho/rho_w)), 0, 1)
-
-        #beta = C * ((jnp.abs(u))**(-2/3)) * grounded_mask
-        beta = C * (1/(jnp.abs(u_base)**(2/3) + (1e-8)**(2/3))) * grounded_mask
-
-        #jax.debug.print("f2: {}", f2)
-        #jax.debug.print("beta factor: {}", (1 / (1 + beta*f2)))
+        beta = new_beta(u_base, zs)
 
         beta_eff = beta / (1 + beta*f2)
-
-        #jax.debug.print("beta: {}", beta)
-        #jax.debug.print("beta_eff: {}", beta_eff)
         
-        return beta_eff
+        return beta, beta_eff
 
 
     #equation 6
@@ -755,7 +732,7 @@ def make_mom_solver_diva(iterations, rheology_n=3, mode="DIVA", compile_=False):
         #                lambda _: jnp.zeros_like(u_va),
         #                operand=None)
         f2 = arthern_function(mu_vv, zs, m=2)
-        beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
+        beta, beta_eff = new_beta_eff(u_vv[...,0], f2, zs)
 
         #solve linear problem
         u_va, residual = setup_and_solve_linear_prob(u_va, mu_va, beta_eff, zs)
@@ -1027,13 +1004,13 @@ accumulation = jnp.zeros_like(x)+0.3/(3.15e7)
 C = 7.624e6
 
 #A = 4.6146e-24
-A = 5e-26
+A = 5e-25
 #A = 5e-24 #This works, but I have to change the timestep from 1e10 to 5e8 which is a bit of a bummer.
 
 B = 2 * (A**(-1/3))
 
 #epsilon_visc = 1e-5/(3.15e7)
-epsilon_visc = 3e-11
+epsilon_visc = 3e-13
 
 
 #b = 720 - 778.5*x/750_000
@@ -1045,6 +1022,10 @@ x_s = x/l
 h_init = 4000*jnp.exp(-2*((x_s)**15))
 #h_init = 4000 - 3500*x_s*x_s
 #h_init = 500 + 4000*jnp.exp(-2*((x_s+0.35)**15))
+
+
+h_init = jnp.load("./possible_starting_thk.npy")
+
 
 u_trial = jnp.zeros_like(x)
 h_trial = h_init.copy()
@@ -1076,10 +1057,15 @@ z_coordinates = define_z_coordinates(n_levels, h_trial)
 #
 #raise
 
+
+
+
+
 #DIVA:
 n_iterations = 15
 timestep = 1e9
-accumulation = 2/(3.15e7) #2 m/yr
+#accumulation = 2/(3.15e7) #2 m/yr
+accumulation = 0
 solver = make_full_solver(n_iterations, timestep, acc=accumulation)
 
 
@@ -1092,15 +1078,33 @@ u_va = u_va_init.copy()
 dudz = dudz_init.copy()
 hs = []
 us = []
-for i in range(100):
+for i in range(250):
     print("Year: {}".format(int((i+1)*timestep/(3.15e7))))
     h_old, u_va, u_vv, mu_va, mu_vv, dudz, beta, beta_eff, zs, itns, res, resrat = solver(u_va, dudz, zs)
     
     hs.append(zs[...,-1]-zs[...,0])
     us.append(u_va)
-plotboths(hs, b, us, len(hs))
+#plotboths(hs, b, us, len(hs))
 
 
+siy=3.15e7
+
+X, Z = np.meshgrid(x, np.arange(n_levels), indexing='ij')  # (n, 11)
+
+# Replace Z with the actual z_coords from your data
+Z = zs
+
+plt.figure(figsize=(8, 4))
+#contour = plt.contourf(X, Z, u_vv*siy, levels=101, cmap='gnuplot2', vmin=0, vmax=10000)
+contour = plt.contourf(X, Z, (u_vv-u_vv[...,0][...,None])*siy, levels=101, cmap='gnuplot2', vmin=0, vmax=1)
+plt.colorbar(contour, label='Speed (m/a)')
+plt.ylabel('Elevation (m)')
+for i in range(z_coordinates.shape[-1]):
+    plt.plot(x, zs[...,i], c="white", alpha=0.15)
+plt.show()
+
+
+#jnp.save("./possible_starting_thk.npy", hs[-1])
 
 
 raise
