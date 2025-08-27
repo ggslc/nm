@@ -12,7 +12,10 @@ from sparsity_utils import scipy_coo_to_csr,\
 
 
 
+
 #3rd party
+import petsc4py
+petsc4py.init(sys.argv)
 from petsc4py import PETSc
 #from mpi4py import MPI
 
@@ -86,7 +89,7 @@ def make_newton_solver(C, f, n_iterations):
     j_coordinate_sets = jnp.tile(jnp.arange(nr*nc), len(basis_vectors))
     mask = (i_coordinate_sets>=0).astype(jnp.int8)
 
-    sparse_jacrev_func, densify_func = make_sparse_jacrev_fct_new(basis_vectors,\
+    sparse_jacrev_func, densify_func = iake_sparse_jacrev_fct_new(basis_vectors,\
                                              i_coordinate_sets,\
                                              j_coordinate_sets,\
                                              mask)
@@ -125,22 +128,85 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
 
     iptr, j, values = scipy_coo_to_csr(values, coordinates, jac_shape, return_decomposition=True)
 
+    opts = PETSc.Options()
+    opts['ksp_rtol']  = 1.0e-12
+    opts['ksp_norm_type'] = 'unpreconditioned'
+    opts['ksp_monitor'] = None
+    opts['ksp_max_it'] = 20
+
+
     #rows_local = int(jac_shape[0] / size)
 
     #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr, j, values), bsize=[rows_local, jac_shape], comm=comm)
-    A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr.astype(np.int32), j.astype(np.int32), values), comm=comm)
+    #A = PETSc.Mat().createAIJ(size=jac_shape, csr=(iptr.astype(np.int32), j.astype(np.int32), values), comm=comm)
     
-    b = PETSc.Vec().createWithArray(b, comm=comm)
+    #b = PETSc.Vec().createWithArray(b, comm=comm)
     
-    x = b.duplicate()
+    #x = b.duplicate()
     
+    #What follows is very bad behaviour. We have assembled the jacobian in serial (on each rank)
+    #now split it across ranks...
+    Nrow = jac_shape[0]
+    Ncol = Nrow
+    nrow = int(Nrow/size) 
+    row_lo = int(comm.getRank()*nrow)
+    row_hi = min(row_lo + nrow, Nrow)
+    nrow = row_hi - row_lo
+
+
+    #print (iptr)
+    #print (j)
+    #print (values)
+
+    iptr_local = iptr[row_lo:row_hi+1]
+    j_local = j[iptr_local[0]:iptr_local[-1]]
+    v_local = values[iptr_local[0]:iptr_local[-1]]
+    indx_local = iptr_local - iptr_local[0]
+
+    #print (iptr_local)
+    #print (j_local)
+    #print (v_local)
+
+    A = PETSc.Mat()
+    A.create(comm=comm)
+    A.setSizes(((nrow,Nrow),(PETSc.DECIDE,Nrow)))
+    A.setType(PETSc.Mat.Type.AIJ)
     
+    #simpler
+    A.setPreallocationNNZ(9) # 5 but 9 eventually
+    
+    # more general
+    #A.setPreallocationCSR((indx_local,j_local))
+    A.setValuesIJV(indx_local, j_local, v_local)
+
+    # COO seems to be missing - shame
+    #A.setPreallocationCOO(coordinates[0], coordinates[1])
+    #A.setValuesCOO(values)
+    
+    # I think A.setValuesIJV achieves this, but
+    A.assemblyBegin()
+    A.assemblyEnd()
+
+
+    A.viewFromOptions('-view_mat')
+    xv, bv = A.createVecs() # A xv = bv
+    print (row_lo, row_hi, b.shape)
+    print (f'xv: size {xv.size}, local size {xv.local_size}, {xv.owner_range}') 
+    #xv.viewFromOptions('-view_vec')
+
+    bv.setArray(b[row_lo:row_hi])
+    bv.assemblyBegin()
+    bv.assemblyEnd()
+
+    print (f'bv: size {bv.size}, local size {bv.local_size}, {bv.owner_range}') 
+    bv.viewFromOptions('-view_vec')
+
     # Create a linear solver
     ksp = PETSc.KSP().create()
     ksp.setType(ksp_type)
 
     ksp.setOperators(A)
-    #ksp.setFromOptions()
+    ksp.setFromOptions()
     
     if preconditioner is not None:
         #assessing if preconditioner is doing anything:
@@ -154,22 +220,35 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
             pc = ksp.getPC()
             pc.setType(preconditioner)
 
-        #pc.apply(b, x)
-        #print((A*x - b).norm())
-        #raise
-
-
+    t_ksp_0 = time.time()
+    
     if precondition_only:
-        pc.apply(b, x)
+        pc.apply(bv, xv)
     else:
-        ksp.solve(b, x)
-    
+        ksp.solve(bv, xv)
+
+    t_ksp_1 = time.time()
+    print("ksp/pc time with n={}: {}s".format(Nrow, t_ksp_1 - t_ksp_0))
+
     # Print the solution
-    #x.view()
+    xv.viewFromOptions('-view_vec')
+
+
+    Xv = PETSc.Vec().create()
+    Xv.setType(PETSc.Vec.Type.MPI)
+    Xv.setSizes((Nrow,Nrow))
     
+    print(f'Xv: size {Xv.size}, local size {Xv.local_size}, {Xv.owner_range}') 
+    Xv.assemble()
 
-    x_jnp = jnp.array(x.getArray())
+    is_to = PETSc.IS().createStride(nrow, first=row_lo, step=1)
+    is_from = PETSc.IS().createStride(nrow)   
+    scat = PETSc.Scatter().create(xv, is_from, Xv, is_to)
+    scat.scatter(xv, Xv)
 
+    Xv.viewFromOptions('-view_vec')
+    x_jnp = jnp.array(Xv.getArray())
+    #print (x_jnp)
     return x_jnp
 
 
@@ -244,7 +323,8 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
         u = u_trial.copy()
 
         #interesting to see that it doesn't go that well if I do only one iteration
-        #even though the problem is linear... suggests it's not solving it all that well..
+        #even though the problem is linear... suggests it's not solving it all that well.
+        #SLC - need to set KSP options, ksp_rtol in particular
         for i in range(n_iterations):
             print(jnp.max(jnp.abs(residual_func(u))))
 
@@ -272,7 +352,7 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
 
             du = solve_petsc_sparse(residual_jac_sparse[mask],\
                                     coords, (nr*nc, nr*nc), rhs,\
-                                    preconditioner="hypre",\
+                                    preconditioner='hypre',\
                                     precondition_only=False)
             
             #t1 = time.time()
@@ -301,41 +381,42 @@ def spherical_wave(nr, nc, amplitude=1, frequency=10):
 
     return wave
 
-nr = int(2**12.5)
-nc = int(2**12.5)
+opt_db = PETSc.Options()
+nc = opt_db.getInt('nc',4)
+nr = opt_db.getInt('nr',nc)
 dy = 1/nr
 dx = 1/nc
 
 C = spherical_wave(nr, nc, frequency=20, amplitude=500)
+#C = jnp.zeros((nr,nc)) + 0.0 
 
-
-##plt.imshow(C)
-##plt.colorbar()
-##plt.show()
-##raise
-#
-#f = 1
-#
-#u_init = jnp.ones_like(C).reshape(-1)
-#
-##1 should be enough as the problem is linear but seemingly benefits from another
-#n_iterations = 2
-##solver = make_newton_solver(C, f, n_iterations)
-#solver = make_newton_solver_sparse_jac(C, f, n_iterations)
-#
-#t0 = time.time()
-#u_final = solver(u_init)
-#t1 = time.time()
-#print("Solver time with nr={}: {}s".format(nr, t1-t0))
-#
-#plt.imshow(u_final.reshape((nr,nc)), cmap="gnuplot2", vmin=0)
+#plt.imshow(C)
 #plt.colorbar()
 #plt.show()
-#
-#plt.figure(figsize=(10, 4))
-#plt.plot(u_final.reshape((nr,nc))[1250,:])
-#plt.show()
 #raise
+
+f = 1
+
+u_init = jnp.ones_like(C).reshape(-1)
+
+#1 should be enough as the problem is linear but seemingly benefits from another
+n_iterations = 1
+#solver = make_newton_solver(C, f, n_iterations)
+solver = make_newton_solver_sparse_jac(C, f, n_iterations)
+
+t0 = time.time()
+u_final = solver(u_init)
+t1 = time.time()
+print("Solver time with nr={}: {}s".format(nr, t1-t0))
+
+plt.imshow(u_final.reshape((nr,nc)), cmap="gnuplot2", vmin=0)
+plt.colorbar()
+plt.show()
+
+plt.figure(figsize=(10, 4))
+plt.plot(u_final.reshape((nr,nc))[1250,:])
+plt.show()
+raise
 
 
 def plot_with_diagonal_grid(x, y, title="X vs Y with Diagonal Grid", xlabel="x", ylabel="y"):
