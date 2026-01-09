@@ -7,6 +7,29 @@ import matplotlib.pyplot as plt
 
 #TODO: function for translating stencil into set of basis vectors
 
+#@jax.jit #length argument is an issue
+def jax_coo_to_csr(values, coordinates, shape):
+    n_rows, n_cols = shape
+    nnz = values.size
+    rows = coordinates[0]
+    cols = coordinates[1]
+    
+    # sort verything by (row, col) (i*m + j)
+    key = rows.astype(jnp.int64) * jnp.int64(n_cols) + cols.astype(jnp.int64)
+    order = jnp.argsort(key)
+    rows_sorted = rows[order]
+    cols_sorted = cols[order]
+    vals_sorted = values[order]
+
+    # count number of values in each row, for each row index.
+    counts = jnp.bincount(rows_sorted, length=n_rows)
+    # work out index of value that starts each row
+    indptr = jnp.concatenate([jnp.array([0], dtype=jnp.int32), jnp.cumsum(counts).astype(jnp.int32)])
+
+    indices = cols_sorted.astype(jnp.int32)
+    return indptr, indices, vals_sorted, order
+
+
 def dodgy_coo_to_csr(values, coordinates, shape, return_decomposition=False):
 
     a = scipy.sparse.coo_array((values, (coordinates[:,0], coordinates[:,1])), shape=shape).tocsr()
@@ -146,7 +169,7 @@ def make_sparse_jacrev_fct_new(basis_vectors, i_coord_sets, j_coord_sets, mask):
         
         apply_basis = lambda bv: vjp_fun(bv)[0]
         
-        basis = jnp.stack(basis_vectors).astype(jnp.float32) #int8 won't cut it apparently...
+        basis = jnp.stack(basis_vectors).astype(jnp.float64) #int8 won't cut it apparently...
         
         rows = jax.vmap(apply_basis)(basis)
 
@@ -166,7 +189,100 @@ def make_sparse_jacrev_fct_new(basis_vectors, i_coord_sets, j_coord_sets, mask):
     return sparse_jacrev, densify_sparse_jac
 
 
-def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2):
+def make_sparse_jacrev_fct_shared_basis(basis_vectors, i_coord_sets, j_coord_sets,\
+                                        mask, n_outputs, active_indices=None):
+
+
+    if active_indices is None:
+        active_indices = list(range(n_primals))
+    else:
+        active_indices = list(active_indices)
+
+    n_primals = len(active_indices)
+
+    def sparse_jacrev(fun_, primals):
+        #unfortunately, there is no way to avoid retracing fun_ each
+        #time you apply sparse_jacrev. It's a load of bullshit but
+        #oh well. If it turns out to be really expensive, it might be
+        #worth trying to add  a custom sparse Jacobian transform or
+        #use JAX internals like jax.make_jaxpr or jax.interpreters.ad 
+        #to extract Jacobian structure directly.
+
+        #This is incredibly simple and can be so due to the fact that
+        #it assumes the basis vectors are shared by the primals. This
+        #will be the case for u and v, but might not be the case for h
+        #for example. Can certainly accomodate this, but maybe another
+        #time.
+    
+
+        #You can't specify which arguments vjp_fun will differentiate
+        #with respect to, so this is a little wrapper that ensures "inactive"
+        #arguments are static in the function definition:
+        def wrapped_function(*active_arguments):
+            all_arguments = list(primals)
+            for i, idx in enumerate(active_indices):
+                all_arguments[idx] = active_arguments[i]
+            return fun_(*all_arguments)
+
+        _, vjp_fun = jax.vjp(wrapped_function, *[primals[k] for k in active_indices])
+        #vjp_fun takes a tuple of shape (output_0, output_1, ...)
+
+        
+        basis = jnp.stack(basis_vectors).astype(jnp.float64) #int8 won't cut it apparently...
+        
+        #def apply_basis_for_output(out_index):
+        #    return lambda bv: vjp_fun(
+        #            tuple(
+        #                tuple([bv] * n_primals) if i==out_index\
+        #                else tuple([jnp.zeros_like(bv)] * n_primals)\
+        #                for i in range(n_outputs)
+        #                                     )
+        #          )
+        def apply_basis_for_output(out_index):
+            return lambda bv: vjp_fun(
+                    tuple(
+                        [bv if i==out_index\
+                        else jnp.zeros_like(bv)\
+                        for i in range(n_outputs)]
+                                             )
+                  )
+
+        rows_for_output = []
+        for i in range(n_outputs):
+            rows_for_output.append(
+                    jax.vmap(apply_basis_for_output(i))(basis)
+                                  )
+
+        #rows_for_output looks like [(d_output0/d_primal0, d_output0/d_primal1, ...),\
+        #                            (d_output1/d_primal0, d_output1/d_primal1, ...)]
+        #... I think
+        #and each d_outputi/d_primalj has shape (n_basis_vectors,nr*nc)
+
+
+        #want to return d_output0/d_primal0, d_output0/d_primal1, ..., 
+        # d_output1/d_primal0, d_output1/d_primal1, ...
+
+        return [rows_for_output[i][j].flatten()
+                for j in range(n_primals)
+                for i in range(n_outputs)
+               ]
+
+
+    #def densify_sparse_jac(jacrows_vec, n):
+    #    jac = jnp.zeros((n, n))
+
+    #    ics = i_coord_sets[mask].astype(jnp.int32)
+    #    jcs = j_coord_sets[mask].astype(jnp.int32)
+    #    jac_vec  = jacrows_vec[mask]
+
+    #    jac = jac.at[ics, jcs].set(jac_vec)
+
+    #    return jac
+
+    return sparse_jacrev#, densify_sparse_jac
+
+
+def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2, periodic_x=False):
     #NOTE: Need to think about speed and memory efficiency in this function.
     #E.g. defining intermediate functions to limit the scope of intermediate
     #variables. I also wonder whether I need to be creating so many dense arrays.
@@ -181,9 +297,9 @@ def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2):
     #...of 3 gives a 49-point stencil etc
 
     # width of the patch of the grid surrounding each colour
-    # = stencil with plus half a stencil width plus one
+    # = stencil width plus half a stencil width plus one
     # = (2*r + 1) + r + 1
-    colour_patch_width = 3*r + 2
+    #colour_patch_width = 3*r + 2 #NOTE: don't need this
 
     #You just have to colour the domain in patches of the same size as the stencil
     stencil_width = 2*r + 1
@@ -209,7 +325,7 @@ def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2):
 
     #Need to know, when you do the vjp, what the coordinates are 
     #of the resulting non-zero values of the row vectors
-    j_coordinates_guess = jnp.arange(nr*nc, dtype=jnp.int32)
+    #j_coordinates_guess = jnp.arange(nr*nc, dtype=jnp.int32) #NOTE: don't actually need this
     #j_coords = jnp.zeros((stencil_width**2, nr*nc), dtype=jnp.int32)
     #i_coords = jnp.zeros((stencil_width**2, nr*nc), dtype=jnp.int32)
     j_coords = []
@@ -232,11 +348,28 @@ def basis_vectors_and_coords_2d_square_stencil(nr, nc, r=2):
         #errors if coordinate values exceed 16_777_216. Irritating bug.
         colour_coordinates = jnp.zeros((nr*nc,), dtype=jnp.int32)\
                              .at[colour_indices].set(colour_indices+1)
-    
+
         #2D version, padded by a stencil radius
-        ccs_padded = jnp.pad(colour_coordinates.reshape(nr, nc),\
-                     pad_width=((r, r),(r, r)),\
-                     mode='constant', constant_values=0)
+        if periodic_x:
+            #NOTE: this will only work, unfortunately, if the domain is exactly tileable
+            #in x by the stencil. Else the stencil doesn't wrap nicely and we're screwed.
+            #There is a way to do it, I'm sure. But I'm fed up.
+            assert nc % stencil_width == 0, "Domain must be tileable in x by stencil width"
+
+            # Pad rows (y-direction) with zeros
+            ccs_y_padded = jnp.pad(colour_coordinates.reshape(nr, nc),\
+                         pad_width=((r, r),(0, 0)),\
+                         mode='constant', constant_values=0)
+        
+            # Manually wrap columns (x-direction)
+            left = ccs_y_padded[:, -r:]
+            right = ccs_y_padded[:, :r]
+            ccs_padded = jnp.concatenate([left, ccs_y_padded, right], axis=1)
+        else:
+            # Non-periodic in both directions
+            ccs_padded = jnp.pad(colour_coordinates.reshape(nr, nc),\
+                         pad_width=((r, r),(r, r)),\
+                         mode='constant', constant_values=0)
 
         #fill a stencil-radius around each node of colour with the index of that colour
         i_coordinates = jnp.zeros((nr, nc), dtype=jnp.int32)
