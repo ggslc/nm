@@ -11,8 +11,6 @@ from sparsity_utils import scipy_coo_to_csr,\
                            make_sparse_jacrev_fct_new
 
 
-
-
 #3rd party
 import petsc4py
 petsc4py.init(sys.argv)
@@ -37,7 +35,44 @@ import matplotlib.cm as cm
 
 np.set_printoptions(precision=1, suppress=False, linewidth=np.inf, threshold=np.inf)
 
+def make_residual_function_advectiony(C, f):
+    ny, nx = f.shape
 
+    def residual_function(u_1d):
+
+        u_2d = u_1d.reshape((ny, nx))
+
+
+
+        fd_flux_diffs_x = jnp.zeros((ny, nx))
+        fd_flux_diffs_y = jnp.zeros((ny, nx))
+
+        fd_flux_diffs_x = fd_flux_diffs_x.at[:, 1:].set((u_2d[:, 1:] - u_2d[:, :-1])*dy)
+        fd_flux_diffs_x = fd_flux_diffs_x.at[:, 0].set((2*u_2d[:, 0])*dy)
+
+        fd_flux_diffs_y = fd_flux_diffs_y.at[:-1,:].set((u_2d[:-1, :] - u_2d[1:, :])*dx)
+        fd_flux_diffs_y = fd_flux_diffs_y.at[-1, :].set((2*u_2d[-1,:])*dx)
+
+
+
+        x_flux_diffs = jnp.zeros((ny, nx))
+        y_flux_diffs = jnp.zeros((ny, nx))
+
+        x_flux_diffs = x_flux_diffs.at[:, 1:-1].set((dy/dx) * (u_2d[:,2:] + u_2d[:,:-2] - 2*u_2d[:,1:-1]))
+        x_flux_diffs = x_flux_diffs.at[:, 0].set((dy/dx) * (-2*u_2d[:, 0]))
+        x_flux_diffs = x_flux_diffs.at[:,-1].set((dy/dx) * (-2*u_2d[:,-1]))
+
+        y_flux_diffs = y_flux_diffs.at[1:-1, :].set((dx/dy) * (u_2d[2:,:] + u_2d[:-2,:] - 2*u_2d[1:-1,:]))
+        y_flux_diffs = y_flux_diffs.at[0, :].set((dx/dy) * (-2*u_2d[0, :]))
+        y_flux_diffs = y_flux_diffs.at[-1,:].set((dx/dy) * (-2*u_2d[-1,:]))
+
+
+        #volume_term = (-C*u_2d + f)*dx*dy
+
+        #return (-x_flux_diffs - y_flux_diffs + C*(fd_flux_diffs_x + fd_flux_diffs_y) - f).reshape(-1)
+        return (C*(fd_flux_diffs_x + fd_flux_diffs_y) - f).reshape(-1)
+
+    return residual_function
 
 
 def make_residual_function(C, f):
@@ -122,7 +157,10 @@ def make_newton_solver(C, f, n_iterations):
     return solver
 
 
-def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', preconditioner='hypre', precondition_only=False):
+def solve_petsc_sparse(values, coordinates, jac_shape,\
+                       b, ksp_type='gmres', preconditioner='hypre',\
+                       precondition_only=False):
+    
     comm = PETSc.COMM_WORLD
     size = comm.Get_size()
 
@@ -171,6 +209,12 @@ def solve_petsc_sparse(values, coordinates, jac_shape, b, ksp_type='gmres', prec
     A.create(comm=comm)
     A.setSizes(((nrow,Nrow),(PETSc.DECIDE,Nrow)))
     A.setType(PETSc.Mat.Type.AIJ)
+    
+    #set ksp iterations
+    opts = PETSc.Options()
+    opts['ksp_max_it'] = 20
+    opts['ksp_monitor'] = None
+    opts['ksp_rtol'] = 1e-10
     
     #simpler
     A.setPreallocationNNZ(9) # 5 but 9 eventually
@@ -297,7 +341,8 @@ def sparse_linear_solve(values, coordinates, jac_shape, b, x0=None, mode="scipy-
 
 def make_newton_solver_sparse_jac(C, f, n_iterations):
 
-    residual_func = make_residual_function(C, f)
+    #residual_func = make_residual_function(C, f)
+    residual_func = make_residual_function_advectiony(C, f)
 
     basis_vectors, i_coordinate_sets\
             = basis_vectors_and_coords_2d_square_stencil(nr, nc, 1)
@@ -352,7 +397,8 @@ def make_newton_solver_sparse_jac(C, f, n_iterations):
 
             du = solve_petsc_sparse(residual_jac_sparse[mask],\
                                     coords, (nr*nc, nr*nc), rhs,\
-                                    preconditioner='hypre',\
+                                    ksp_type="bcgs",\
+                                    preconditioner="hypre",\
                                     precondition_only=False)
             
             #t1 = time.time()
@@ -382,18 +428,38 @@ def spherical_wave(nr, nc, amplitude=1, frequency=10):
     return wave
 
 opt_db = PETSc.Options()
-nc = opt_db.getInt('nc',4)
-nr = opt_db.getInt('nr',nc)
+
+
+nr = int(2**9.5)
+nc = int(2**9.5)
 dy = 1/nr
 dx = 1/nc
 
-C = spherical_wave(nr, nc, frequency=20, amplitude=500)
-#C = jnp.zeros((nr,nc)) + 0.0 
 
-#plt.imshow(C)
-#plt.colorbar()
-#plt.show()
-#raise
+C = spherical_wave(nr, nc, frequency=20, amplitude=500)
+
+
+#f = 1
+f = jnp.zeros((nr, nc))
+f = f.at[int(nr/4):int(nr/2), int(nc/4):int(nc/2)].set(1)
+
+
+u_init = jnp.ones((nr, nc)).reshape(-1)
+
+#1 should be enough as the problem is linear but seemingly benefits from another
+n_iterations = 1
+#solver = make_newton_solver(C, f, n_iterations)
+solver = make_newton_solver_sparse_jac(C, f, n_iterations)
+
+t0 = time.time()
+u_final = solver(u_init)
+t1 = time.time()
+print("Solver time with nr={}: {}s".format(nr, t1-t0))
+
+plt.imshow(u_final.reshape((nr,nc)), cmap="gnuplot2", vmin=0)
+plt.colorbar()
+plt.show()
+
 
 f = 1
 
@@ -468,15 +534,22 @@ def plot_with_diagonal_grid(x, y, title="X vs Y with Diagonal Grid", xlabel="x",
     plt.show()
 
 
-#dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24., 25.])
+#dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24., 25., 26])
 #times_log2 = np.array([1.52356196, 1.36120689, 1.39999135, 1.41792001, 1.49005662,
 #              1.67671874, 2.12465899, 2.60715274, 3.26828467, 3.98713893,
-#              5.23817542, 6.20045727, 7.50049934, 9.926])
+#              5.23817542, 6.20045727, 7.50049934, 9.926, np.log2(796)])
 
-dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24.])
+
+#getting rid of my 2**25 one as I was running out of memory a bit...
+dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24., 26])
 times_log2 = np.array([1.52356196, 1.36120689, 1.39999135, 1.41792001, 1.49005662,
               1.67671874, 2.12465899, 2.60715274, 3.26828467, 3.98713893,
-              5.23817542, 6.20045727, 7.50049934])
+              5.23817542, 6.20045727, 7.50049934, np.log2(796)])
+
+#dofs_log2 = np.array([ 6.,  8., 10., 12., 14., 16., 18., 19., 20., 21., 22., 23., 24.])
+#times_log2 = np.array([1.52356196, 1.36120689, 1.39999135, 1.41792001, 1.49005662,
+#              1.67671874, 2.12465899, 2.60715274, 3.26828467, 3.98713893,
+#              5.23817542, 6.20045727, 7.50049934])
 
 plot_with_diagonal_grid(dofs_log2, times_log2, title="", xlabel="log2(n_dofs)", ylabel="log2(time)")
 
